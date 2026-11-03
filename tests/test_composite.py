@@ -123,9 +123,20 @@ tasks.register('assertWorkspace') {
         target = Path(self.temp.name) / "复用 service"
         original.rename(target)
         original.symlink_to(target, target_is_directory=True)
-        result = self.gradle("-I", "scripts/verify-composite.gradle", ":gateway:assertWorkspace", ":gateway:verifyCompositeModel")
+        with (self.root / 'build.gradle').open('a') as f:
+            f.write("""
+tasks.register('assertIncludedBuildIdentity') {
+    doLast {
+        def included = gradle.includedBuild('gateway')
+        assert included.projectDir.absolutePath == included.projectDir.canonicalPath
+        println 'VERIFIED included build uses physical path identity'
+    }
+}
+""")
+        result = self.gradle("-I", "scripts/verify-composite.gradle", "assertIncludedBuildIdentity", ":gateway:assertWorkspace", ":gateway:verifyCompositeModel")
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn("VERIFIED gateway:", result.stdout)
+        self.assertIn('VERIFIED included build uses physical path identity', result.stdout)
 
 
 if __name__ == "__main__":

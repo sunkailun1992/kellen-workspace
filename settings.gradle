@@ -30,7 +30,7 @@ if (missing) {
 
 gradle.ext.workspaceJavaRepositories = javaRepositories
 javaRepositories.each { repo ->
-    includeBuild(repo.name) {
+    includeBuild(file(repo.name).canonicalFile) {
         name = repo.name
         // 仅替换个人 SDK 坐标；com.kellen 制品继续由子仓自己的仓库解析。
         if (repo.kind == 'java-library') {

@@ -136,6 +136,29 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(self.git('rev-parse', 'HEAD', cwd=self.root / 'alpha'), target)
         self.cli('update')
 
+    def test_update_preserves_ignored_file_when_remote_starts_tracking_it(self):
+        seed = self.seeds['alpha']
+        filename = 'local-settings.txt'
+        (seed / '.gitignore').write_text(filename + '\n')
+        self.git('add', '.gitignore', cwd=seed)
+        self.git('commit', '-m', 'ignore local settings', cwd=seed)
+        self.git('push', 'origin', 'main', cwd=seed)
+        self.cli('bootstrap', '--only', 'alpha')
+        child = self.root / 'alpha'
+        original = b'private local value\n'
+        (child / filename).write_bytes(original)
+        head = self.git('rev-parse', 'HEAD', cwd=child)
+        self.assertFalse(self.cli('status', '--only', 'alpha')['repositories'][0]['dirty'])
+        (seed / filename).write_text('remote default\n')
+        self.git('add', '-f', filename, cwd=seed)
+        self.git('commit', '-m', 'track default settings', cwd=seed)
+        self.git('push', 'origin', 'main', cwd=seed)
+        result = self.cli('update', '--only', 'alpha', code=1)
+        self.assertEqual(result['repositories'][0]['state'], 'error')
+        self.assertEqual(self.git('rev-parse', 'HEAD', cwd=child), head)
+        self.assertEqual((child / filename).read_bytes(), original)
+        self.assertNotIn('private local value', json.dumps(result))
+
     def test_status_does_not_fetch(self):
         self.clone()
         child = self.root / 'alpha'

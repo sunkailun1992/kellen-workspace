@@ -65,6 +65,8 @@ cd kellen-workspace
 
 脚本不会stash、reset、自动提交、推送或切换已有仓库分支。origin不匹配、非Git目录或其他操作错误会明确报告；逐仓处理后会汇总结果。
 
+FF合并同时使用`--no-overwrite-ignore`：若远端开始跟踪与本机ignored文件同名的路径，更新会中止并返回操作错误，保留本机文件和当前HEAD。正常的ignored构建产物本身不计为dirty。
+
 | 退出码 | 含义 |
 | --- | --- |
 | `0` | 全部成功，或状态检查正常完成 |
@@ -80,6 +82,8 @@ cd kellen-workspace
 ```
 
 用IDEA打开本工作区根目录，设置Gradle JVM为JDK 17，并从根`settings.gradle`进行一次Gradle导入。根构建将清单中的11个Java项目作为included builds导入。缺少项目时会提示先初始化，不会静默忽略。
+
+复用symlink时，根构建将included build路径解析为目标的真实路径，避免IDEA模型把链接路径与真实路径视为不同项目；构建名仍沿用清单，所以`:服务名:bootRun`入口保持一致。
 
 `idea.sh`生成本机忽略的`.idea/vcs.xml`，添加总仓和13个子仓的Git映射，并保留既有用户映射。运行脚本后可在IDEA版本控制设置中确认这些独立仓库。
 

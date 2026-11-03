@@ -176,7 +176,8 @@ def update(root, repo, args):
     if state['ahead']:
         return dict(state='skipped', reason='diverged' if state['behind'] else 'ahead', **state)
     if state['behind']:
-        git(path, 'merge', '--ff-only', '--no-edit', 'refs/remotes/origin/' + branch)
+        git(path, 'merge', '--ff-only', '--no-overwrite-ignore', '--no-edit',
+            'refs/remotes/origin/' + branch)
         return dict(state='updated', **local_state(path, repo))
     return dict(state='up-to-date', **state)
 
