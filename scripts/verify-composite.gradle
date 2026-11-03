@@ -1,0 +1,48 @@
+import org.gradle.api.artifacts.component.ModuleComponentSelector
+import org.gradle.api.artifacts.component.ProjectComponentIdentifier
+import org.gradle.api.artifacts.result.ResolvedDependencyResult
+
+// 用法：./gradlew -I scripts/verify-composite.gradle :gateway:verifyCompositeModel ...
+// Init script 对 included builds 同样生效；只读解析模型，不执行 bootRun 或发布任务。
+gradle.beforeProject { project ->
+    project.pluginManager.withPlugin('java') {
+        project.tasks.register('verifyCompositeModel') {
+            group = 'verification'
+            description = '核对本工作区 SDK 源码替换与 bootRun 工作目录，不启动进程。'
+            doLast {
+                def bootRun = project.tasks.findByName('bootRun')
+                if (bootRun != null) {
+                    if (bootRun.workingDir.canonicalFile != project.projectDir.canonicalFile) {
+                        throw new GradleException("${project.name}: bootRun 工作目录必须是该服务的 projectDir。")
+                    }
+                    logger.lifecycle("${project.name}: bootRun workingDir=projectDir")
+                }
+                def personalCount = 0
+                def companyCount = 0
+                project.configurations.getByName('compileClasspath').incoming.resolutionResult.allDependencies.each { dependency ->
+                    def requested = dependency.requested
+                    if (requested instanceof ModuleComponentSelector && requested.module in ['utils', 'rpc-api']
+                            && requested.group in ['com', 'com.kellen']) {
+                        if (!(dependency instanceof ResolvedDependencyResult)) {
+                            throw new GradleException("${project.name}: 无法解析 ${requested.displayName}。")
+                        }
+                        def local = dependency.selected.id instanceof ProjectComponentIdentifier
+                        if (requested.group == 'com') {
+                            if (!local || dependency.selected.moduleVersion.group != 'com'
+                                    || dependency.selected.moduleVersion.name != requested.module) {
+                                throw new GradleException("${project.name}: ${requested.displayName} 必须解析到本地 SDK 项目。")
+                            }
+                            personalCount++
+                        } else {
+                            if (local) {
+                                throw new GradleException("${project.name}: 禁止替换公司坐标 ${requested.displayName}。")
+                            }
+                            companyCount++
+                        }
+                    }
+                }
+                logger.lifecycle("${project.name}: verified ${personalCount} personal SDK source dependencies, ${companyCount} company module dependencies")
+            }
+        }
+    }
+}

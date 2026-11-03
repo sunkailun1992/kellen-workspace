@@ -1,0 +1,52 @@
+name: Workspace CI
+
+on:
+  push:
+    branches: [main, test, preprod]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: workspace-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scripts:
+    name: Scripts (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Bash syntax
+        run: bash -n scripts/bootstrap.sh scripts/update.sh scripts/status.sh scripts/idea.sh
+      - name: Test workspace scripts with temporary Git repositories
+        run: python3 -m unittest discover -s tests -v
+
+  composite:
+    name: Public bootstrap and Java composite
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Test composite with local Gradle fixtures
+        env:
+          WORKSPACE_GRADLE_TESTS: '1'
+        run: python3 -m unittest discover -s tests -p test_composite.py -v
+      - name: Download all 13 public repositories
+        run: ./scripts/bootstrap.sh
+      - name: Check independent repository status
+        run: ./scripts/status.sh
+      - name: Verify workspace and compile all Java sources
+        run: ./gradlew --no-daemon verifyWorkspace compileAllJava

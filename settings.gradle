@@ -1,0 +1,42 @@
+import groovy.json.JsonSlurper
+
+rootProject.name = 'kellen-workspace'
+
+// 清单是唯一仓库来源；只导入 Java 构建，前端保留各自工具链。
+def manifest = new JsonSlurper().parse(file('repos.json'))
+if (manifest.schemaVersion != 1 || !(manifest.repositories instanceof List)) {
+    throw new GradleException('repos.json 必须使用 schemaVersion 1 和 repositories 数组。')
+}
+def repositories = manifest.repositories
+if (repositories.any { !(it.name instanceof String) || !(it.name ==~ /[a-z0-9]+(?:-[a-z0-9]+)*/) }
+        || repositories*.name.toSet().size() != repositories.size()) {
+    throw new GradleException('repos.json 仓库名必须唯一，且只能包含小写字母、数字和连字符。')
+}
+def javaRepositories = repositories.findAll { it.kind in ['java-library', 'java-service'] }
+def libraries = javaRepositories.findAll { it.kind == 'java-library' }
+if (javaRepositories.size() != 11 || libraries*.name.toSet() != ['utils', 'rpc-api'].toSet()
+        || javaRepositories.count { it.kind == 'java-service' } != 9) {
+    throw new GradleException('repos.json 必须包含 11 个 Java 构建：utils、rpc-api 两个库及九个服务。')
+}
+def missing = javaRepositories.findAll { repo ->
+    def directory = file(repo.name)
+    !directory.isDirectory()
+            || !['settings.gradle', 'settings.gradle.kts'].any { new File(directory, it).isFile() }
+            || !['build.gradle', 'build.gradle.kts'].any { new File(directory, it).isFile() }
+}
+if (missing) {
+    throw new GradleException("缺少 Java 仓库或 Gradle 构建文件：${missing*.name.join(', ')}。请先运行 ./scripts/bootstrap.sh；复用已有仓库可用 ./scripts/bootstrap.sh --reuse-existing <个人项目父目录>。")
+}
+
+gradle.ext.workspaceJavaRepositories = javaRepositories
+javaRepositories.each { repo ->
+    includeBuild(repo.name) {
+        name = repo.name
+        // 仅替换个人 SDK 坐标；com.kellen 制品继续由子仓自己的仓库解析。
+        if (repo.kind == 'java-library') {
+            dependencySubstitution {
+                substitute module("com:${repo.name}") using project(':')
+            }
+        }
+    }
+}

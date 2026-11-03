@@ -1,0 +1,35 @@
+# 13个独立仓库：checkout与本机symlink都不属于总仓。
+/utils
+/rpc-api
+/gateway
+/user
+/ai-agent
+/ai
+/ai-memory
+/rag
+/mcp
+/message
+/report
+/admin-web
+/ai-wechat-mini-programs
+/.workspace-clone-*/
+
+# 本机IDE、构建和运行状态；.run/共享入口保留跟踪。
+/.idea/
+*.iml
+.DS_Store
+/.gradle/
+/build/
+/out/
+**/__pycache__/
+*.py[cod]
+/.venv/
+/venv/
+/node_modules/
+/.env
+/.env.*
+/*.local
+/*.local.*
+
+# 本任务本机辅助材料，不公开归档或历史。
+.superpowers/

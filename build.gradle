@@ -1,0 +1,26 @@
+plugins {
+    id 'base'
+}
+
+def javaRepositories = gradle.ext.workspaceJavaRepositories
+
+tasks.register('verifyWorkspace') {
+    group = 'verification'
+    description = '核对清单的 11 个 Java included builds；不启动服务、不发布制品。'
+    doLast {
+        def expected = javaRepositories*.name.toSet()
+        def actual = gradle.includedBuilds*.name.toSet()
+        if (actual != expected) {
+            throw new GradleException("Java 构建与清单不一致：expected=${expected}, actual=${actual}")
+        }
+        logger.lifecycle("Verified ${actual.size()} Java included builds: ${javaRepositories*.name.join(', ')}")
+        logger.lifecycle('SDK substitution: com:utils -> :utils, com:rpc-api -> :rpc-api (workspace only)')
+    }
+}
+
+tasks.register('compileAllJava') {
+    group = 'build'
+    description = '编译清单内全部 11 个 Java 构建的生产源码，不执行测试、服务或发布。'
+    dependsOn tasks.named('verifyWorkspace')
+    dependsOn javaRepositories.collect { gradle.includedBuild(it.name).task(':compileJava') }
+}
