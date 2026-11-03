@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "repositories": [
+    {"name": "utils", "url": "https://github.com/sunkailun1992/utils.git", "branch": "main", "kind": "java-library"},
+    {"name": "rpc-api", "url": "https://github.com/sunkailun1992/rpc-api.git", "branch": "main", "kind": "java-library"},
+    {"name": "gateway", "url": "https://github.com/sunkailun1992/gateway.git", "branch": "main", "kind": "java-service"},
+    {"name": "user", "url": "https://github.com/sunkailun1992/user.git", "branch": "main", "kind": "java-service"},
+    {"name": "ai-agent", "url": "https://github.com/sunkailun1992/ai-agent.git", "branch": "main", "kind": "java-service"},
+    {"name": "ai", "url": "https://github.com/sunkailun1992/ai.git", "branch": "main", "kind": "java-service"},
+    {"name": "ai-memory", "url": "https://github.com/sunkailun1992/ai-memory.git", "branch": "main", "kind": "java-service"},
+    {"name": "rag", "url": "https://github.com/sunkailun1992/rag.git", "branch": "main", "kind": "java-service"},
+    {"name": "mcp", "url": "https://github.com/sunkailun1992/mcp.git", "branch": "main", "kind": "java-service"},
+    {"name": "message", "url": "https://github.com/sunkailun1992/message.git", "branch": "main", "kind": "java-service"},
+    {"name": "report", "url": "https://github.com/sunkailun1992/report.git", "branch": "main", "kind": "java-service"},
+    {"name": "admin-web", "url": "https://github.com/sunkailun1992/admin-web.git", "branch": "main", "kind": "web"},
+    {"name": "ai-wechat-mini-programs", "url": "https://github.com/sunkailun1992/ai-wechat-mini-programs.git", "branch": "main", "kind": "wechat"}
+  ]
+}
