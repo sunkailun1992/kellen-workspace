@@ -33,3 +33,9 @@
 
 # 本任务本机辅助材料，不公开归档或历史。
 .superpowers/
+
+# IDE/agent local memory and JVM crash artifacts.
+.remember/
+*.hprof
+hs_err_pid*.log
+replay_pid*.log
