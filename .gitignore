@@ -57,3 +57,12 @@ replay_pid*.log
 !*.env.example
 !*.env.sample
 !*.env.template
+
+# IDE 生成文件与编译输出不进入仓库；源码和共享运行配置继续跟踪。
+/bin/
+/target/
+/.classpath
+/.project
+/.settings/
+/.factorypath
+/.apt_generated/
