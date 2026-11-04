@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parent.parent
+EXCLUDED_REPOSITORIES = ('ai-wechat-mini-programs',)
 
 
 class WorkspaceError(Exception):
@@ -75,10 +76,12 @@ def load_manifest(root):
                 or name.lower() in seen):
             raise WorkspaceError('Invalid or duplicate repository name.')
         seen.add(name.lower())
+        if name.lower() in EXCLUDED_REPOSITORIES:
+            raise WorkspaceError('Mobile repositories are outside this workspace scope.')
         github_identity(repo.get('url'))
         if repo.get('branch') != 'main':
             raise WorkspaceError('Repository branch must be main.')
-        if repo.get('kind') not in ('java-library', 'java-service', 'web', 'wechat'):
+        if repo.get('kind') not in ('java-library', 'java-service', 'web'):
             raise WorkspaceError('Invalid repository kind.')
     return repos
 
@@ -182,7 +185,7 @@ def update(root, repo, args):
     return dict(state='up-to-date', **state)
 
 
-def idea(root, repos, dry_run):
+def idea(root, repos, dry_run, active_repos=None):
     directory = root / '.idea'
     target = directory / 'vcs.xml'
     if directory.is_symlink() or target.is_symlink():
@@ -201,6 +204,29 @@ def idea(root, repos, dry_run):
     component = project.find("component[@name='VcsDirectoryMappings']")
     if component is None:
         component = ET.SubElement(project, 'component', name='VcsDirectoryMappings')
+    # Retire only exact Git mappings for the formerly managed mobile checkout.
+    # Keep the checkout/symlink itself and unrelated custom mappings untouched.
+    retired = set()
+    retired_physical = set()
+    active = {root.resolve()} | {(root / repo['name']).resolve() for repo in
+                                (repos if active_repos is None else active_repos)}
+    for name in EXCLUDED_REPOSITORIES:
+        legacy = root / name
+        retired.update(('$PROJECT_DIR$/' + name, str(legacy)))
+        physical = legacy.resolve()
+        if physical not in active:
+            retired_physical.add(physical)
+            retired.add(str(physical))
+            retired.add('$PROJECT_DIR$/' + os.path.relpath(physical, root))
+    removed = []
+    for mapping in list(component.findall('mapping')):
+        value = mapping.get('directory', '')
+        expanded = value.replace('$PROJECT_DIR$', str(root), 1) if value.startswith('$PROJECT_DIR$') else value
+        # Normalize known path spelling without following an unrelated custom symlink.
+        same_physical_root = bool(expanded) and Path(expanded).is_absolute() and Path(os.path.normpath(expanded)) in retired_physical
+        if mapping.get('vcs') == 'Git' and (value in retired or same_physical_root):
+            removed.append(value)
+            component.remove(mapping)
     existing = {item.get('directory') for item in component.findall('mapping')}
     mappings = ['$PROJECT_DIR$'] + ['$PROJECT_DIR$/' + repo['name'] for repo in repos]
     added = []
@@ -208,7 +234,7 @@ def idea(root, repos, dry_run):
         if mapping not in existing:
             ET.SubElement(component, 'mapping', directory=mapping, vcs='Git')
             added.append(mapping)
-    if not dry_run and (added or not target.exists()):
+    if not dry_run and (added or removed or not target.exists()):
         directory.mkdir(exist_ok=True)
         ET.indent(tree, space='  ')
         # Write beside destination and replace atomically, preserving malformed input on error.
@@ -221,7 +247,7 @@ def idea(root, repos, dry_run):
         finally:
             if os.path.exists(filename):
                 os.unlink(filename)
-    return dict(state='planned' if dry_run else 'configured', added=added)
+    return dict(state='planned' if dry_run else 'configured', added=added, removed=removed)
 
 
 def main(argv=None):
@@ -241,13 +267,14 @@ def main(argv=None):
         if args.reuse_existing is not None and args.command != 'bootstrap':
             raise WorkspaceError('--reuse-existing is only valid for bootstrap.')
         repos = load_manifest(ROOT)
+        active_repos = repos
         if args.only:
             names = {repo['name'] for repo in repos}
             if set(args.only) - names:
                 raise WorkspaceError('Unknown repository in --only.')
             repos = [repo for repo in repos if repo['name'] in args.only]
         if args.command == 'idea':
-            result['idea'] = idea(ROOT, repos, args.dry_run)
+            result['idea'] = idea(ROOT, repos, args.dry_run, active_repos)
         else:
             for repo in repos:
                 row = dict(name=repo['name'])

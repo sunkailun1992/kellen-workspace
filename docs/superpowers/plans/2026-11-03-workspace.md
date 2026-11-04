@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 提供13仓独立Git的一键下载/更新和IDEA统一导入入口，验证后推送main。
+**Goal:** 提供12仓独立Git的一键下载/更新和IDEA统一导入入口，验证后推送main。
 
 **Architecture:** 清单驱动的meta repo；Python标准库封装安全Git操作；Gradle composite及共享运行配置统一Java开发。本机通过ignored symlink复用现有checkout，新使用者直接clone子仓。
 
@@ -12,7 +12,8 @@
 
 ## Global Constraints
 
-- 13仓独立Git，不使用submodule；公司项目与私有历史备份不操作。
+- 12仓独立Git，不使用submodule；公司项目与私有历史备份不操作。
+- 仅11个Java后端和admin-web；历史小程序移出清单和IDEA模型，但保留目录/symlink及Git ignore。
 - 子仓dirty、非main、detached、ahead/diverged不得被自动切换、覆盖或提交。
 - 仅替换本地`com:utils`/`com:rpc-api`；无业务源代码与远端制品发布变更。
 - 不提交任何实际凭据、个人绝对路径、子仓源码/历史、产物或IDE本机状态。
@@ -53,5 +54,5 @@
 
 - [ ] 文档说明两种初始化、更新保护、独立提交/推送、前端工具链、本机配置与现有Gateway测试边界。
 - [ ] CI运行Python测试并验证真实清单和Gradle入口；提供手动触发。
-- [ ] 独立审查脚本、子仓索引隔离与13仓/公司边界；执行全新13仓下载。
+- [ ] 独立审查脚本、子仓索引隔离与12仓/公司边界；执行全新12仓下载。
 - [ ] 检查暂存树和凭据、提交、合入main、推送并回读refs/CI；设置公开仓权限并清理本次短分支。

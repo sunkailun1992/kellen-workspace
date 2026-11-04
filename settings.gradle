@@ -28,6 +28,7 @@ if (missing) {
     throw new GradleException("缺少 Java 仓库或 Gradle 构建文件：${missing*.name.join(', ')}。请先运行 ./scripts/bootstrap.sh；复用已有仓库可用 ./scripts/bootstrap.sh --reuse-existing <个人项目父目录>。")
 }
 
+gradle.ext.workspaceRepositories = repositories
 gradle.ext.workspaceJavaRepositories = javaRepositories
 javaRepositories.each { repo ->
     includeBuild(file(repo.name).canonicalFile) {

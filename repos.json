@@ -12,7 +12,6 @@
     {"name": "mcp", "url": "https://github.com/sunkailun1992/mcp.git", "branch": "main", "kind": "java-service"},
     {"name": "message", "url": "https://github.com/sunkailun1992/message.git", "branch": "main", "kind": "java-service"},
     {"name": "report", "url": "https://github.com/sunkailun1992/report.git", "branch": "main", "kind": "java-service"},
-    {"name": "admin-web", "url": "https://github.com/sunkailun1992/admin-web.git", "branch": "main", "kind": "web"},
-    {"name": "ai-wechat-mini-programs", "url": "https://github.com/sunkailun1992/ai-wechat-mini-programs.git", "branch": "main", "kind": "wechat"}
+    {"name": "admin-web", "url": "https://github.com/sunkailun1992/admin-web.git", "branch": "main", "kind": "web"}
   ]
 }

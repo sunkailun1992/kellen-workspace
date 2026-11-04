@@ -138,6 +138,66 @@ tasks.register('assertIncludedBuildIdentity') {
         self.assertIn("VERIFIED gateway:", result.stdout)
         self.assertIn('VERIFIED included build uses physical path identity', result.stdout)
 
+    def test_idea_model_excludes_legacy_mobile_but_preserves_directory(self):
+        self.create_builds()
+        target = Path(self.temp.name) / '独立 mobile target'
+        target.mkdir()
+        marker = target / 'keep.txt'
+        marker.write_bytes(b'independent mobile stays untouched\n')
+        mobile = self.root / 'ai-wechat-mini-programs'
+        mobile.symlink_to(target, target_is_directory=True)
+        with (self.root / 'build.gradle').open('a') as f:
+            f.write("""
+tasks.register('assertIdeaScope') {
+    doLast {
+        def excluded = idea.module.excludeDirs
+        def legacy = file('ai-wechat-mini-programs')
+        assert excluded.contains(legacy)
+        assert excluded.contains(legacy.canonicalFile)
+        assert !excluded.contains(file('admin-web'))
+        assert gradle.includedBuilds.size() == 11
+        assert !gradle.includedBuilds.any { it.name == 'ai-wechat-mini-programs' }
+    }
+}
+""")
+        result = self.gradle('assertIdeaScope', 'ideaModule')
+        self.assertEqual(result.returncode, 0, result.stdout)
+        module = ET.parse(self.root / 'kellen-workspace.iml')
+        excluded_urls = {item.get('url') for item in module.findall('.//excludeFolder')}
+        excluded_paths = {Path(url.removeprefix('file://').replace('$MODULE_DIR$', str(self.root))).resolve()
+                          for url in excluded_urls}
+        self.assertIn(target.resolve(), excluded_paths)
+        self.assertNotIn((self.root / 'admin-web').resolve(), excluded_paths)
+        self.assertTrue(mobile.is_symlink())
+        self.assertEqual(marker.read_bytes(), b'independent mobile stays untouched\n')
+
+    def test_idea_model_preserves_active_web_when_legacy_mobile_aliases_it(self):
+        self.create_builds()
+        web = self.root / 'admin-web'
+        web.mkdir()
+        marker = web / 'keep.txt'
+        marker.write_bytes(b'active web stays untouched\n')
+        mobile = self.root / 'ai-wechat-mini-programs'
+        mobile.symlink_to(web, target_is_directory=True)
+        with (self.root / 'build.gradle').open('a') as f:
+            f.write("""
+tasks.register('assertActiveWebScope') {
+    doLast {
+        def web = file('admin-web').canonicalFile
+        assert !idea.module.excludeDirs.any { it.canonicalFile == web }
+        assert gradle.includedBuilds.size() == 11
+    }
+}
+""")
+        result = self.gradle('assertActiveWebScope', 'ideaModule')
+        self.assertEqual(result.returncode, 0, result.stdout)
+        module = ET.parse(self.root / 'kellen-workspace.iml')
+        excluded = {Path(item.get('url').removeprefix('file://').replace('$MODULE_DIR$', str(self.root))).resolve()
+                    for item in module.findall('.//excludeFolder')}
+        self.assertNotIn(web.resolve(), excluded)
+        self.assertTrue(mobile.is_symlink())
+        self.assertEqual(marker.read_bytes(), b'active web stays untouched\n')
+
 
 if __name__ == "__main__":
     unittest.main()

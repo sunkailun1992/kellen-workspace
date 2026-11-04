@@ -1,8 +1,17 @@
 plugins {
     id 'base'
+    id 'idea'
 }
 
 def javaRepositories = gradle.ext.workspaceJavaRepositories
+
+// 保留曾经复用的移动端目录，但不将其加入根模块的 IDEA 内容模型。
+def excludedMobile = file('ai-wechat-mini-programs')
+def activeRoots = gradle.ext.workspaceRepositories.collect { file(it.name).canonicalFile }.toSet()
+activeRoots.add(projectDir.canonicalFile)
+if (!activeRoots.contains(excludedMobile.canonicalFile)) {
+    idea.module.excludeDirs += [excludedMobile, excludedMobile.canonicalFile]
+}
 
 tasks.register('verifyWorkspace') {
     group = 'verification'

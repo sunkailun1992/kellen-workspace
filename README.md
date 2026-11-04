@@ -1,6 +1,6 @@
 # kellen-workspace
 
-13个个人开源项目的统一开发入口。各项目保留独立Git仓库，在IDEA中通过根Gradle composite统一导入11个Java项目；前端和微信小程序使用各自工具链。
+12个个人开源项目的统一开发入口。各项目保留独立Git仓库，在IDEA中通过根Gradle composite统一导入11个Java项目；Web前端admin-web使用自己的工具链。
 
 本仓库只保存清单、辅助脚本、共享IDE运行入口和文档。项目清单以[`repos.json`](repos.json)为准，不包含子项目源码、Git历史或公司项目。
 
@@ -8,14 +8,14 @@
 | --- | --- |
 | Java库（2） | `utils`、`rpc-api` |
 | Java服务（9） | `gateway`、`user`、`ai-agent`、`ai`、`ai-memory`、`rag`、`mcp`、`message`、`report` |
-| 前端（2） | `admin-web`、`ai-wechat-mini-programs` |
+| Web前端（1） | `admin-web` |
 
 ## 环境要求
 
 - Git、Bash、Python 3.10+（只使用标准库，无需安装Python依赖）。
 - JDK 17；Gradle由根目录的wrapper固定为8.14.3，无需全局安装。
 - 首次下载需要访问GitHub和项目使用的远端依赖仓库。
-- 前端的Node.js/包管理器及微信开发者工具，按各子项目文档配置。
+- Web前端的Node.js/包管理器，按admin-web文档配置。
 
 ## 初始化
 
@@ -27,7 +27,7 @@ cd kellen-workspace
 ./scripts/bootstrap.sh
 ```
 
-脚本按照清单将13个项目的`main`分支下载到工作区根目录下的同名子目录。每个目录有独立`.git`，全部被本仓库忽略。
+脚本按照清单将12个项目的`main`分支下载到工作区根目录下的同名子目录。每个目录有独立`.git`，全部被本仓库忽略。
 
 已有项目位于工作区的相邻目录时，可以复用现有checkout：
 
@@ -85,11 +85,13 @@ FF合并同时使用`--no-overwrite-ignore`：若远端开始跟踪与本机igno
 
 复用symlink时，根构建将included build路径解析为目标的真实路径，避免IDEA模型把链接路径与真实路径视为不同项目；构建名仍沿用清单，所以`:服务名:bootRun`入口保持一致。
 
-`idea.sh`生成本机忽略的`.idea/vcs.xml`，添加总仓和13个子仓的Git映射，并保留既有用户映射。运行脚本后可在IDEA版本控制设置中确认这些独立仓库。
+`idea.sh`生成本机忽略的`.idea/vcs.xml`，添加总仓和12个子仓的Git映射，并保留既有用户映射。运行脚本后可在IDEA版本控制设置中确认这些独立仓库。
 
 `.run/`提供9个服务的共享Gradle `bootRun`入口；入口通过根构建调用`:服务名:bootRun`，每个服务的工作目录为自己的项目目录。启动前，按子项目说明准备本机配置和所需外部服务。本仓库不提供真实凭据，也不自动启动数据库、中间件或业务服务。
 
-`admin-web`和`ai-wechat-mini-programs`不加入Java构建。分别在自己的目录中使用既有前端命令和微信开发者工具；IDEA中的Git映射不代表其依赖安装、打包或运行已经完成。
+`admin-web`不加入Java构建，在自己的目录中使用既有前端命令；IDEA中的Git映射不代表其依赖安装、打包或运行已经完成。
+
+移动端和微信小程序不在总工作区范围内。历史`ai-wechat-mini-programs`目录或symlink保留并继续被Git忽略，脚本不下载、更新或检查该仓库。`idea.sh`会移除此前生成的该仓精确Git映射（工作区路径及symlink真实目标），保留其他用户映射；根IDEA模块也排除该目录。已有IDEA会话请执行脚本后重新加载根Gradle模型。
 
 ## 本地依赖与独立发布
 
@@ -106,7 +108,7 @@ git -C utils commit -m "修复工具方法"
 git -C utils push
 ```
 
-只有清单、脚本、共享入口和文档等工作区改动才提交到总仓。13个子仓的提交与推送互相独立，没有跨仓原子提交；跨仓变更应记录各仓提交并按各自流程验证和发布。
+只有清单、脚本、共享入口和文档等工作区改动才提交到总仓。12个子仓的提交与推送互相独立，没有跨仓原子提交；跨仓变更应记录各仓提交并按各自流程验证和发布。
 
 ## 验证与CI边界
 
@@ -129,6 +131,6 @@ GitHub Actions在`main`、`test`、`preprod`推送及面向`main`的PR上运行�
 
 ## 本机文件与隐私
 
-13个项目目录、symlink、`.idea/`、Gradle缓存、构建产物、环境文件和本机配置均由`.gitignore`排除。提交前检查总仓暂存树，避免通过强制添加绕过忽略规则。
+12个项目目录、symlink、`.idea/`、Gradle缓存、构建产物、环境文件和本机配置均由`.gitignore`排除。提交前检查总仓暂存树，避免通过强制添加绕过忽略规则。
 
 不要把凭据、真实运行配置、个人绝对路径、公司项目、私有历史备份或归档加入总仓。源码检查工具应在本仓库已跟踪文件范围内运行；检查子项目时在对应独立仓库中单独执行，避免递归扫描被忽略的checkout或symlink。

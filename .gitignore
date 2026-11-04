@@ -1,4 +1,4 @@
-# 13个独立仓库：checkout与本机symlink都不属于总仓。
+# 12个独立仓库：checkout与本机symlink都不属于总仓。
 /utils
 /rpc-api
 /gateway
@@ -11,6 +11,7 @@
 /message
 /report
 /admin-web
+# 已移出整合范围的历史移动端目录仍须忽略；不删除独立checkout或链接。
 /ai-wechat-mini-programs
 /.workspace-clone-*/
 

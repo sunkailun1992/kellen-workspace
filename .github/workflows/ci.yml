@@ -44,7 +44,7 @@ jobs:
         env:
           WORKSPACE_GRADLE_TESTS: '1'
         run: python3 -m unittest discover -s tests -p test_composite.py -v
-      - name: Download all 13 public repositories
+      - name: Download all 12 public repositories
         run: ./scripts/bootstrap.sh
       - name: Check independent repository status
         run: ./scripts/status.sh

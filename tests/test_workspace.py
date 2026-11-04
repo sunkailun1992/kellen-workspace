@@ -10,6 +10,23 @@ import unittest
 import xml.etree.ElementTree as ET
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts' / 'workspace.py'
+PROJECT_ROOT = SCRIPT.parent.parent
+MOBILE = 'ai-wechat-mini-programs'
+
+
+class ManifestScopeTests(unittest.TestCase):
+    def test_workspace_contains_only_eleven_java_and_admin_web(self):
+        manifest = json.loads((PROJECT_ROOT / 'repos.json').read_text())
+        repos = manifest['repositories']
+        self.assertEqual(len(repos), 12)
+        self.assertEqual(sum(repo['kind'].startswith('java-') for repo in repos), 11)
+        self.assertEqual([repo['name'] for repo in repos if repo['kind'] == 'web'], ['admin-web'])
+        self.assertNotIn(MOBILE, [repo['name'] for repo in repos])
+
+    def test_legacy_mobile_checkout_stays_ignored(self):
+        result = subprocess.run(['git', 'check-ignore', '--no-index', MOBILE],
+                                cwd=PROJECT_ROOT, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 class WorkspaceTests(unittest.TestCase):
@@ -330,6 +347,99 @@ class WorkspaceTests(unittest.TestCase):
         path.write_text('not xml')
         self.cli('idea', code=1)
         self.assertEqual(path.read_text(), 'not xml')
+
+    def test_mobile_requests_are_rejected_without_touching_legacy_checkout(self):
+        mobile = self.root / MOBILE
+        mobile.mkdir()
+        (mobile / 'keep.txt').write_bytes(b'keep independent mobile checkout\n')
+        for command in ('bootstrap', 'update', 'status', 'idea'):
+            self.cli(command, '--only', MOBILE, code=1)
+        self.cli('bootstrap')
+        self.cli('status')
+        self.cli('update', '--dry-run')
+        self.assertEqual((mobile / 'keep.txt').read_bytes(), b'keep independent mobile checkout\n')
+        self.assertFalse((mobile / '.git').exists())
+
+    def test_manifest_rejects_mobile_kind_and_retired_name(self):
+        for name, kind in (('old-client', 'wechat'), (MOBILE, 'web')):
+            self.repos.append(dict(name=name, kind=kind, branch='main',
+                                   url=self.repos[0]['url']))
+            self.manifest()
+            self.cli('bootstrap', code=1)
+            self.repos.pop()
+
+    def test_idea_removes_exact_legacy_mobile_mappings_and_preserves_symlink(self):
+        source = self.base / '独立 mobile checkout'
+        source.mkdir()
+        (source / 'keep.txt').write_bytes(b'mobile contents preserved\n')
+        link = self.root / MOBILE
+        link.symlink_to(source, target_is_directory=True)
+        directory = self.root / '.idea'
+        directory.mkdir()
+        path = directory / 'vcs.xml'
+        project = ET.Element('project', version='4')
+        component = ET.SubElement(project, 'component', name='VcsDirectoryMappings')
+        removed = {f'$PROJECT_DIR$/{MOBILE}', str(self.root.resolve() / MOBILE), str(source.resolve())}
+        kept = {'$PROJECT_DIR$/custom', str(source / 'custom-child'),
+                f'$PROJECT_DIR$/{MOBILE}-archive'}
+        for value in removed | kept:
+            ET.SubElement(component, 'mapping', directory=value, vcs='Git')
+        ET.SubElement(component, 'mapping', directory=f'$PROJECT_DIR$/{MOBILE}', vcs='Mercurial')
+        ET.ElementTree(project).write(path, encoding='utf-8')
+        before = path.read_bytes()
+        planned = self.cli('idea', '--dry-run')
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(set(planned['idea']['removed']), removed)
+        self.cli('idea')
+        mappings = ET.parse(path).findall('.//mapping')
+        git_dirs = {item.get('directory') for item in mappings if item.get('vcs') == 'Git'}
+        self.assertTrue(removed.isdisjoint(git_dirs))
+        self.assertTrue(kept.issubset(git_dirs))
+        self.assertTrue(any(item.get('vcs') == 'Mercurial' for item in mappings))
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(link.resolve(), source.resolve())
+        self.assertEqual((source / 'keep.txt').read_bytes(), b'mobile contents preserved\n')
+        after = path.read_bytes()
+        self.cli('idea')
+        self.assertEqual(path.read_bytes(), after)
+
+    def test_idea_cleanup_preserves_active_custom_mapping_with_only_selection(self):
+        active = self.root / 'alpha'
+        active.mkdir()
+        (self.root / MOBILE).symlink_to(active, target_is_directory=True)
+        directory = self.root / '.idea'
+        directory.mkdir()
+        path = directory / 'vcs.xml'
+        project = ET.Element('project', version='4')
+        component = ET.SubElement(project, 'component', name='VcsDirectoryMappings')
+        ET.SubElement(component, 'mapping', directory=str(active.resolve()), vcs='Git')
+        ET.SubElement(component, 'mapping', directory=f'$PROJECT_DIR$/{MOBILE}', vcs='Git')
+        ET.ElementTree(project).write(path, encoding='utf-8')
+        self.cli('idea', '--only', 'beta')
+        values = {item.get('directory') for item in ET.parse(path).findall('.//mapping')}
+        self.assertIn(str(active.resolve()), values)
+        self.assertNotIn(f'$PROJECT_DIR$/{MOBILE}', values)
+
+    def test_idea_cleanup_preserves_independent_custom_alias(self):
+        source = self.base / 'independent mobile'
+        source.mkdir()
+        (self.root / MOBILE).symlink_to(source, target_is_directory=True)
+        alias = self.root / 'custom-alias'
+        alias.symlink_to(source, target_is_directory=True)
+        directory = self.root / '.idea'
+        directory.mkdir()
+        path = directory / 'vcs.xml'
+        project = ET.Element('project', version='4')
+        component = ET.SubElement(project, 'component', name='VcsDirectoryMappings')
+        kept = {str(alias), '$PROJECT_DIR$/custom-alias'}
+        for value in kept | {str(source.resolve())}:
+            ET.SubElement(component, 'mapping', directory=value, vcs='Git')
+        ET.ElementTree(project).write(path, encoding='utf-8')
+        self.cli('idea')
+        values = {item.get('directory') for item in ET.parse(path).findall('.//mapping')}
+        self.assertTrue(kept.issubset(values))
+        self.assertNotIn(str(source.resolve()), values)
+        self.assertTrue(alias.is_symlink())
 
 
 if __name__ == '__main__':
