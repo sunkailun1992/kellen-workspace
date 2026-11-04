@@ -133,4 +133,6 @@ GitHub Actions在`main`、`test`、`preprod`推送及面向`main`的PR上运行�
 
 12个项目目录、symlink、`.idea/`、Gradle缓存、构建产物、环境文件和本机配置均由`.gitignore`排除。提交前检查总仓暂存树，避免通过强制添加绕过忽略规则。
 
+本机验证生成的`.class`、`.log`及各层级私有环境文件也会被忽略；不含凭据的`.env.example`、`.env.sample`、`.env.template`等示例模板可正常跟踪。
+
 不要把凭据、真实运行配置、个人绝对路径、公司项目、私有历史备份或归档加入总仓。源码检查工具应在本仓库已跟踪文件范围内运行；检查子项目时在对应独立仓库中单独执行，避免递归扫描被忽略的checkout或symlink。

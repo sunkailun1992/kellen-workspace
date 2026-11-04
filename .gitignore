@@ -40,3 +40,20 @@
 *.hprof
 hs_err_pid*.log
 replay_pid*.log
+
+# 本机验证产物与私有环境配置；规则适用于所有层级。
+*.class
+*.log
+.env
+.env.*
+*.env
+*.private
+*.private.*
+
+# 无凭据的环境示例属于可共享源码，不随私有配置一起忽略。
+!.env.example
+!.env.sample
+!.env.template
+!*.env.example
+!*.env.sample
+!*.env.template
