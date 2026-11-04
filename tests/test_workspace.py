@@ -340,6 +340,57 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(set(values), {'$PROJECT_DIR$', '$PROJECT_DIR$/alpha', '$PROJECT_DIR$/beta', '$PROJECT_DIR$/custom'})
         self.assertIsNotNone(doc.find('.//component[@name="Other"]'))
 
+    def test_idea_maps_reused_repository_by_real_path(self):
+        self.clone()
+        target = self.base / '复用 源码' / 'alpha'
+        target.parent.mkdir()
+        (self.root / 'alpha').rename(target)
+        (self.root / 'alpha').symlink_to(target, target_is_directory=True)
+        (target / 'local.txt').write_text('preserve local changes')
+        before = self.git('status', '--porcelain=v1', cwd=target)
+        self.cli('idea')
+        values = [m.get('directory') for m in ET.parse(self.root / '.idea/vcs.xml').findall('.//mapping')]
+        expected = '$PROJECT_DIR$/' + os.path.relpath(target.resolve(), self.root.resolve())
+        self.assertIn(expected, values)
+        self.assertNotIn('$PROJECT_DIR$/alpha', values)
+        self.assertEqual(self.git('status', '--porcelain=v1', cwd=target), before)
+
+    def test_idea_deduplicates_real_and_symlink_mappings_without_losing_custom_settings(self):
+        self.clone()
+        target = self.base / '复用 源码' / 'alpha'
+        target.parent.mkdir()
+        (self.root / 'alpha').rename(target)
+        (self.root / 'alpha').symlink_to(target, target_is_directory=True)
+        directory = self.root / '.idea'
+        directory.mkdir()
+        path = directory / 'vcs.xml'
+        canonical = '$PROJECT_DIR$/' + os.path.relpath(target.resolve(), self.root.resolve())
+        project = ET.Element('project', version='4')
+        component = ET.SubElement(project, 'component', name='VcsDirectoryMappings')
+        for value in ['$PROJECT_DIR$/alpha', canonical, str(target.resolve()), canonical,
+                      '$PROJECT_DIR$/custom', '$PROJECT_DIR$', '$PROJECT_DIR$']:
+            ET.SubElement(component, 'mapping', directory=value, vcs='Git')
+        ET.SubElement(component, 'mapping', directory='$PROJECT_DIR$/alpha', vcs='Subversion')
+        ET.SubElement(project, 'component', name='Other')
+        ET.ElementTree(project).write(path)
+        original = path.read_bytes()
+        self.cli('idea', '--dry-run')
+        self.assertEqual(path.read_bytes(), original)
+        self.cli('idea')
+        document = ET.parse(path)
+        values = [m.get('directory') for m in document.findall('.//mapping') if m.get('vcs') == 'Git']
+        self.assertEqual(values.count(canonical), 1)
+        self.assertEqual(values.count('$PROJECT_DIR$'), 1)
+        self.assertNotIn('$PROJECT_DIR$/alpha', values)
+        self.assertNotIn(str(target.resolve()), values)
+        self.assertIn('$PROJECT_DIR$/custom', values)
+        self.assertIsNotNone(document.find('.//mapping[@vcs="Subversion"]'))
+        self.assertIsNotNone(document.find('.//component[@name="Other"]'))
+        after = path.read_bytes()
+        self.cli('idea')
+        self.assertEqual(path.read_bytes(), after)
+        self.assertTrue((self.root / 'alpha').is_symlink())
+
     def test_idea_invalid_xml_is_preserved(self):
         idea = self.root / '.idea'
         idea.mkdir()

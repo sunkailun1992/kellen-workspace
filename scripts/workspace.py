@@ -227,8 +227,41 @@ def idea(root, repos, dry_run, active_repos=None):
         if mapping.get('vcs') == 'Git' and (value in retired or same_physical_root):
             removed.append(value)
             component.remove(mapping)
+    # Gradle imports real paths. Map each managed Git root once, so IDEA does
+    # not treat a reuse symlink and its target as two independent repositories.
+    managed = dict.fromkeys([root.resolve()] + [(root / repo['name']).resolve() for repo in repos])
+
+    def mapping_path(value):
+        if value == '$PROJECT_DIR$':
+            return root
+        if value.startswith('$PROJECT_DIR$/'):
+            return Path(os.path.normpath(root / value[len('$PROJECT_DIR$/'):]))
+        if Path(value).is_absolute():
+            return Path(os.path.normpath(value))
+        return None
+
+    preferred = {}
+    for item in component.findall('mapping'):
+        path = mapping_path(item.get('directory', ''))
+        if item.get('vcs') == 'Git' and path in managed:
+            preferred.setdefault(path, item.get('directory'))
+    for path in managed:
+        relative = os.path.relpath(path, root.resolve())
+        preferred.setdefault(path, '$PROJECT_DIR$' if relative == '.' else '$PROJECT_DIR$/' + relative)
+
+    seen = set()
+    for item in list(component.findall('mapping')):
+        value = item.get('directory', '')
+        path = mapping_path(value)
+        physical = path.resolve() if path is not None else None
+        if item.get('vcs') == 'Git' and physical in managed:
+            if value != preferred[physical] or physical in seen:
+                removed.append(value)
+                component.remove(item)
+            else:
+                seen.add(physical)
     existing = {item.get('directory') for item in component.findall('mapping')}
-    mappings = ['$PROJECT_DIR$'] + ['$PROJECT_DIR$/' + repo['name'] for repo in repos]
+    mappings = list(preferred.values())
     added = []
     for mapping in mappings:
         if mapping not in existing:
