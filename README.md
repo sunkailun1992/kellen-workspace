@@ -10,6 +10,21 @@
 | Java服务（9） | `gateway`、`user`、`ai-agent`、`ai`、`ai-memory`、`rag`、`mcp`、`message`、`report` |
 | Web前端（1） | `admin-web` |
 
+## 可选观测启动
+
+全体系观测使用 OTel Java agent，启动前从官方 `opentelemetry-java-instrumentation` 的固定 release `v2.33.1` 获取 agent 和官方 SHA-256 校验值；将文件保存在 Git 外。`OTEL_JAVAAGENT_PATH`、`OTEL_JAVAAGENT_SHA256`、`OTEL_EXPORTER_OTLP_ENDPOINT` 由私有环境提供，若 Collector 要求认证，再提供 `OTEL_EXPORTER_OTLP_HEADERS`；不要把凭据写在命令行或提交到仓库。
+
+```bash
+python3 scripts/run-observed.py rag --dry-run
+python3 scripts/run-observed.py rag
+```
+
+启动器校验清单与agent摘要，仅向选中服务的 `bootRun` JVM 注入 agent，不设置全局 `JAVA_TOOL_OPTIONS`。gateway、ai-agent 默认管理端口分别为17100、17310且仅绑定loopback；从NAS抓取前必须显式设置私网绑定并验证 `actuatorReq` 令牌保护。其它服务沿用已有受保护Actuator入口。
+
+服务 JVM 从所选项目的 `project.version` 同时设置 `SPRING_APPLICATION_VERSION` 与 OTel `service.version`，使 Boot ECS 日志和链路使用同一制品版本；共享模板固定环境为 `github-dev`。Jar/IDE 入口需按观测部署说明显式注入相同版本，缺值日志显示 `unknown`。
+
+公共配置和极空间独立编排位于 `utils/ops/github-dev/observability/`。Java运行在Mac时，NAS不能直接读取Mac日志；应在应用主机运行文件采集器，或复用已有安全采集通道。控制台成功不代表ES已采集、Jaeger可查询或目标实例已启用。
+
 ## 环境要求
 
 - Git、Bash、Python 3.10+（只使用标准库，无需安装Python依赖）。

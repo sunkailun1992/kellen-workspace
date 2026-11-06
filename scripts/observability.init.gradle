@@ -1,0 +1,34 @@
+// 仅为指定服务的bootRun配置agent；不触碰Gradle daemon、测试、编译器或其它服务。
+def observedService = System.getenv('FLEET_OBSERVABILITY_SERVICE')
+gradle.beforeProject { project ->
+    if (project.name == observedService) {
+        project.tasks.withType(JavaExec).configureEach { task ->
+            if (task.name == 'bootRun') {
+                def agent = System.getenv('OTEL_JAVAAGENT_PATH')
+                if (!agent || !new File(agent).isFile()) {
+                    throw new GradleException('观测agent文件缺失；使用run-observed.py验证摘要后启动。')
+                }
+                task.jvmArgs("-javaagent:${agent}")
+                task.environment('OTEL_SERVICE_NAME', project.name)
+                // Boot ECS 读取应用版本；只设置服务进程，与 OTel service.version 同源。
+                task.environment('SPRING_APPLICATION_VERSION', project.version.toString())
+                task.environment('OTEL_RESOURCE_ATTRIBUTES', "service.version=${project.version},deployment.environment.name=github-dev")
+                task.environment('OTEL_EXPORTER_OTLP_PROTOCOL', 'http/protobuf')
+                task.environment('OTEL_METRICS_EXPORTER', 'none')
+                task.environment('OTEL_LOGS_EXPORTER', 'none')
+                task.environment('OTEL_PROPAGATORS', 'tracecontext')
+                // 公网入口不由客户端sampled标志强制全采；内部服务跟随上游。
+                task.environment('OTEL_TRACES_SAMPLER', project.name == 'gateway' ? 'traceidratio' : 'parentbased_traceidratio')
+                task.environment('OTEL_TRACES_SAMPLER_ARG', System.getenv('FLEET_TRACE_RATIO') ?: '0.1')
+                task.environment('OTEL_BSP_MAX_QUEUE_SIZE', '256')
+                task.environment('OTEL_BSP_MAX_EXPORT_BATCH_SIZE', '32')
+                task.environment('OTEL_EXPORTER_OTLP_TIMEOUT', '1000')
+                if (project.name == 'gateway' || project.name == 'ai-agent') {
+                    task.environment('MANAGEMENT_SERVER_PORT', System.getenv('MANAGEMENT_SERVER_PORT') ?: (project.name == 'gateway' ? '17100' : '17310'))
+                    // 跨主机采集时显式覆盖为私网绑定；默认本机，避免意外公网暴露。
+                    task.environment('MANAGEMENT_SERVER_ADDRESS', System.getenv('MANAGEMENT_SERVER_ADDRESS') ?: '127.0.0.1')
+                }
+            }
+        }
+    }
+}

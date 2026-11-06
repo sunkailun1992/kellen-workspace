@@ -36,6 +36,34 @@ class RunConfigurationTests(unittest.TestCase):
 
 @unittest.skipUnless(os.environ.get("WORKSPACE_GRADLE_TESTS") == "1", "set WORKSPACE_GRADLE_TESTS=1 for Gradle integration fixtures")
 class CompositeIntegrationTests(unittest.TestCase):
+    def test_observability_only_changes_selected_service_runtime(self):
+        self.create_builds()
+        shutil.copy2(ROOT / 'scripts/observability.init.gradle', self.root / 'scripts/observability.init.gradle')
+        agent = self.root / 'fixture agent.jar'
+        agent.write_bytes(b'not executed')
+        with (self.root / 'rag/build.gradle').open('a') as stream:
+            stream.write("""
+tasks.register('assertObservedRuntime') {
+    doLast {
+        def runtime = tasks.named('bootRun').get()
+        assert runtime.jvmArgs.findAll { it.startsWith('-javaagent:') }.size() == 1
+        assert runtime.environment.OTEL_SERVICE_NAME == 'rag'
+        assert runtime.environment.SPRING_APPLICATION_VERSION == '1.0'
+        assert runtime.environment.OTEL_RESOURCE_ATTRIBUTES == 'service.version=1.0,deployment.environment.name=github-dev'
+        assert runtime.environment.OTEL_METRICS_EXPORTER == 'none'
+        assert !tasks.named('test').get().jvmArgs.any { it.startsWith('-javaagent:') }
+        println 'OBSERVED runtime only'
+    }
+}
+""")
+        environment = dict(os.environ, FLEET_OBSERVABILITY_SERVICE='rag', OTEL_JAVAAGENT_PATH=str(agent))
+        result = subprocess.run([str(self.root / 'gradlew'), '--offline', '--console=plain',
+                                 '--init-script', str(self.root / 'scripts/observability.init.gradle'),
+                                 ':rag:assertObservedRuntime'], cwd=self.root, env=environment,
+                                text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=240)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn('OBSERVED runtime only', result.stdout)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="workspace 空格 ")
         self.addCleanup(self.temp.cleanup)
