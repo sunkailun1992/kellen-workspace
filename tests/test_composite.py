@@ -41,6 +41,8 @@ class CompositeIntegrationTests(unittest.TestCase):
         shutil.copy2(ROOT / 'scripts/observability.init.gradle', self.root / 'scripts/observability.init.gradle')
         agent = self.root / 'fixture agent.jar'
         agent.write_bytes(b'not executed')
+        privacy = self.root / 'fixture privacy.jar'
+        privacy.write_bytes(b'not executed')
         with (self.root / 'rag/build.gradle').open('a') as stream:
             stream.write("""
 tasks.register('assertObservedRuntime') {
@@ -51,12 +53,16 @@ tasks.register('assertObservedRuntime') {
         assert runtime.environment.SPRING_APPLICATION_VERSION == '1.0'
         assert runtime.environment.OTEL_RESOURCE_ATTRIBUTES == 'service.version=1.0,deployment.environment.name=github-dev'
         assert runtime.environment.OTEL_METRICS_EXPORTER == 'none'
+        assert runtime.environment.OTEL_SPAN_EVENT_COUNT_LIMIT == '0'
+        assert runtime.environment.OTEL_JAVAAGENT_EXTENSIONS.endsWith('fixture privacy.jar')
+        assert !System.getenv('OTEL_JAVAAGENT_EXTENSIONS')
         assert !tasks.named('test').get().jvmArgs.any { it.startsWith('-javaagent:') }
         println 'OBSERVED runtime only'
     }
 }
 """)
-        environment = dict(os.environ, FLEET_OBSERVABILITY_SERVICE='rag', OTEL_JAVAAGENT_PATH=str(agent))
+        environment = dict(os.environ, FLEET_OBSERVABILITY_SERVICE='rag', OTEL_JAVAAGENT_PATH=str(agent),
+                           FLEET_PRIVACY_EXTENSION_PATH=str(privacy))
         result = subprocess.run([str(self.root / 'gradlew'), '--offline', '--console=plain',
                                  '--init-script', str(self.root / 'scripts/observability.init.gradle'),
                                  ':rag:assertObservedRuntime'], cwd=self.root, env=environment,

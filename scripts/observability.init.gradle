@@ -8,7 +8,13 @@ gradle.beforeProject { project ->
                 if (!agent || !new File(agent).isFile()) {
                     throw new GradleException('观测agent文件缺失；使用run-observed.py验证摘要后启动。')
                 }
+                def privacy = System.getenv('FLEET_PRIVACY_EXTENSION_PATH')
+                if (!privacy || !new File(privacy).isFile()) {
+                    throw new GradleException('隐私扩展缺失；使用run-observed.py验证两个固定Jar摘要后启动。')
+                }
                 task.jvmArgs("-javaagent:${agent}")
+                task.environment('OTEL_JAVAAGENT_EXTENSIONS', privacy)
+                task.environment('OTEL_SPAN_EVENT_COUNT_LIMIT', '0')
                 task.environment('OTEL_SERVICE_NAME', project.name)
                 // Boot ECS 读取应用版本；只设置服务进程，与 OTel service.version 同源。
                 task.environment('SPRING_APPLICATION_VERSION', project.version.toString())

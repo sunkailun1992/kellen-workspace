@@ -12,16 +12,16 @@
 
 ## 可选观测启动
 
-全体系观测使用 OTel Java agent，启动前从官方 `opentelemetry-java-instrumentation` 的固定 release `v2.33.1` 获取 agent 和官方 SHA-256 校验值；将文件保存在 Git 外。`OTEL_JAVAAGENT_PATH`、`OTEL_JAVAAGENT_SHA256`、`OTEL_EXPORTER_OTLP_ENDPOINT` 由私有环境提供，若 Collector 要求认证，再提供 `OTEL_EXPORTER_OTLP_HEADERS`；不要把凭据写在命令行或提交到仓库。
+全体系观测使用 OTel Java agent，启动前从官方 `opentelemetry-java-instrumentation` 的固定 release `v2.33.1` 获取 agent 和官方 SHA-256 校验值；将文件保存在 Git 外。还必须按 `utils/ops/github-dev/observability/agent-extension/README.md` 构建 0.1.0 隐私扩展，提供 `FLEET_PRIVACY_EXTENSION_PATH` 与 `FLEET_PRIVACY_EXTENSION_SHA256`；两者缺失时拒绝启用。`OTEL_JAVAAGENT_PATH`、`OTEL_JAVAAGENT_SHA256`、`OTEL_EXPORTER_OTLP_ENDPOINT` 由私有环境提供，若 Collector 要求认证，再提供 `OTEL_EXPORTER_OTLP_HEADERS`；不要把凭据写在命令行或提交到仓库。
 
 ```bash
 python3 scripts/run-observed.py rag --dry-run
 python3 scripts/run-observed.py rag
 ```
 
-启动器校验清单与agent摘要，仅向选中服务的 `bootRun` JVM 注入 agent，不设置全局 `JAVA_TOOL_OPTIONS`。gateway、ai-agent 默认管理端口分别为17100、17310且仅绑定loopback；从NAS抓取前必须显式设置私网绑定并验证 `actuatorReq` 令牌保护。其它服务沿用已有受保护Actuator入口。
+启动器校验清单、固定官方 agent 2.33.1 的 SHA-256/版本与扩展 0.1.0 的本地构建 SHA-256/兼容版本，仅向选中服务的 `bootRun` JVM 注入 agent、`OTEL_JAVAAGENT_EXTENSIONS` 与 events=0，不设置全局 `JAVA_TOOL_OPTIONS`。gateway、ai-agent 默认管理端口分别为17100、17310且仅绑定loopback；从NAS抓取前必须显式设置私网绑定并验证 `actuatorReq` 令牌保护。其它服务沿用已有受保护Actuator入口。
 
-服务 JVM 从所选项目的 `project.version` 同时设置 `SPRING_APPLICATION_VERSION` 与 OTel `service.version`，使 Boot ECS 日志和链路使用同一制品版本；共享模板固定环境为 `github-dev`。Jar/IDE 入口需按观测部署说明显式注入相同版本，缺值日志显示 `unknown`。
+服务 JVM 从所选项目的 `project.version` 同时设置 `SPRING_APPLICATION_VERSION` 与 OTel `service.version`，使 Boot ECS 日志和链路使用同一制品版本；共享模板固定环境为 `github-dev`。Jar/IDE 入口需按观测部署说明先校验两个 Jar 并显式注入相同版本和隐私扩展，缺值日志显示 `unknown`。
 
 公共配置和极空间独立编排位于 `utils/ops/github-dev/observability/`。Java运行在Mac时，NAS不能直接读取Mac日志；应在应用主机运行文件采集器，或复用已有安全采集通道。控制台成功不代表ES已采集、Jaeger可查询或目标实例已启用。
 
