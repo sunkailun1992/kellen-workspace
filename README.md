@@ -25,6 +25,23 @@ python3 scripts/run-observed.py rag
 
 公共配置和极空间独立编排位于 `utils/ops/github-dev/observability/`。Java运行在Mac时，NAS不能直接读取Mac日志；应在应用主机运行文件采集器，或复用已有安全采集通道。控制台成功不代表ES已采集、Jaeger可查询或目标实例已启用。
 
+### 本机受控切换与日志采集
+
+`scripts/manage-observed.py`复用上述观测启动器和workspace composite，不要求先发布远端Git或Maven。启动前须在个人`github-dev`配置中心准备匹配的`actuator.yaml`与metadata-only `logging.yml`，并保留各服务根目录的私有`config/application-dev.properties`。现有服务需逐个切换，不能关闭IDE本身或按进程名批量终止Java。
+
+私有runtime env必须是当前用户受限普通文件（0600，非symlink），包含固定agent/隐私扩展的路径及摘要、`OTEL_EXPORTER_OTLP_ENDPOINT`、`OTEL_EXPORTER_OTLP_HEADERS`、`FLEET_OTLP_TOKEN`。可再配置`FLEET_COLLECTOR_PATH`和`FLEET_COLLECTOR_SHA256`，指向项目任务缓存中经官方release摘要验证的`otelcol-contrib 0.164.0`本机二进制。启动器不执行env内容，不把凭据加入命令行，也不设置全局`JAVA_TOOL_OPTIONS`；业务dev配置仍从既有私有文件和服务根目录读取。
+
+```bash
+python3 scripts/manage-observed.py collector-start --runtime-env /secure/observability.env
+python3 scripts/manage-observed.py start user --replace-pid <已核个人JVM的PID> --runtime-env /secure/observability.env
+```
+
+替换前同时校验PID的个人checkout classpath、服务主类和监听端口，只向该JVM发送TERM；超时不强杀。新进程必须通过应用health、带令牌metrics以及无/错令牌拒绝检查，才记为verified。gateway/ai-agent的health与metrics迁到独立管理端口；必须在私有runtime env显式提供与NAS Prometheus目标一致的`FLEET_MANAGEMENT_BIND_ADDRESS`，不从OTLP出站路由猜入站网卡。业务端口另外验证监听JVM归属。默认`build/observability-runtime/`保存受限PID回执、尝试历史和诊断日志，`logs/`只写白名单ECS JSON；单服务轮转上限10MB、保留3期、总上限40MB。Collector只采集该目录，使用仓库原生`collector-agent.yaml`、有限异步队列和固定官方二进制，不安装全局工具；它自身的数值遥测只绑定`127.0.0.1:18888`，不占用既有8888进程。退出工具后服务继续运行；此入口不是操作系统开机自启或自动重启守护程序。
+
+该入口的成功回执只证明本机进程和管理边界。NAS Prometheus目标UP、ES真实安全日志、Jaeger链路和告警通知仍须分别验收；Collector启动成功不能替代日志送达。
+
+本机访问自身私网地址可能被本机路由/网络策略阻断，即使NAS已经成功抓取。验证超时会保留新JVM和诊断回执，不自动回滚或杀进程；先从NAS分别核health、正确/错误令牌和Prometheus目标，再决定是否重试。外部验收证据与本机超时分开保存，不能把本机探测失败直接解释为服务未启动。
+
 ## 环境要求
 
 - Git、Bash、Python 3.10+（只使用标准库，无需安装Python依赖）。
