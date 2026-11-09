@@ -238,16 +238,22 @@ public final class FleetMigration {
         String relation=namespace+"."+(source?MigrationCore.mysql(table.name):MigrationCore.pg(table.name));
         // 先在服务器上检查总行数与单行原始字节，避免驱动先缓存超大行才触发应用限制。
         String sizes=String.join("+",table.columns.stream().map(c->{String name=source?MigrationCore.mysql(c.name()):MigrationCore.pg(c.name());String value=source?"CAST("+name+" AS BINARY)":c.kind()==MigrationCore.Kind.BINARY?name:"CAST("+name+" AS text)";return "COALESCE(OCTET_LENGTH("+value+"),0)::bigint";}).map(s->source?s.replace("::bigint",""):s).toList());
+        // sizes/relation 仅含 mysql()/pg() 白名单校验并引用的标识符及固定语法，不拼接行值。
+        // nosemgrep: formatted-sql-string, java.lang.security.audit.formatted-sql-string.formatted-sql-string
         try(Statement statement=statement(connection,config.timeout);ResultSet rows=statement.executeQuery("SELECT count(*) AS n, COALESCE(MAX("+sizes+"),0) AS max_bytes FROM "+relation)) {
             check(rows.next(),"SIZE_CHECK_FAILED");long count=rows.getLong(1),maximum=rows.getLong(2);check(count>=0&&count<=config.maxRows,"ROW_COUNT_LIMIT");check(maximum>=0&&maximum<=config.maxRowBytes,"ROW_BYTES_LIMIT");
         }
         String sql="SELECT "+names+" FROM "+relation;
         MigrationCore.Rows fingerprint=new MigrationCore.Rows(config.maxRows,config.maxRowBytes);
+        // SELECT 的动态部分仅为上述已校验的 names/relation；标识符不能用 JDBC 值占位符替代。
+        // nosemgrep: formatted-sql-string, java.lang.security.audit.formatted-sql-string.formatted-sql-string
         try(PreparedStatement statement=query(connection,sql,config.timeout);ResultSet rows=statement.executeQuery()) {
             while(rows.next()) {
                 List<Object> values=new ArrayList<>(); int remaining=config.maxRowBytes;
                 for(int i=0;i<table.columns.size();i++) { Object value=MigrationCore.read(rows,i+1,table.columns.get(i),remaining); remaining-=MigrationCore.bytes(table.columns.get(i).kind(),value).length;check(remaining>=0,"ROW_BYTES_LIMIT");values.add(value); }
                 fingerprint.add(table.columns,values);
+                // INSERT 结构只含 pg() 校验并引用的标识符；所有行值均由 bind() 参数化。
+                // nosemgrep: formatted-sql-string, java.lang.security.audit.formatted-sql-string.formatted-sql-string
                 if(insert!=null) { for(int i=0;i<values.size();i++) MigrationCore.bind(insert,i+1,table.columns.get(i),values.get(i));check(insert.executeUpdate()==1,"INSERT_ROW_COUNT"); }
             }
         }
@@ -317,6 +323,8 @@ public final class FleetMigration {
             String[] parts=identity.split("\\.");String table=parts[0],column=parts[1];
             // 只接受驱动元数据指认的序列；表和列均已通过固定标识符校验。
             Long maximum=null;
+            // 序列所属表列在此再次由 pg() 白名单校验并引用；schema 和聚合函数固定。
+            // nosemgrep: formatted-sql-string, java.lang.security.audit.formatted-sql-string.formatted-sql-string
             try(Statement statement=statement(target,prepared.config.timeout);ResultSet rows=statement.executeQuery("SELECT max("+MigrationCore.pg(column)+") FROM public."+MigrationCore.pg(table))) {check(rows.next(),"IDENTITY_MAXIMUM");long value=rows.getLong(1);if(!rows.wasNull())maximum=value;}
             Table original=prepared.tables.stream().filter(t->t.database.equals(db)&&t.name.equals(table)).findFirst().orElseThrow();SequenceSetting setting=sequenceSetting(original.sourceNextId,maximum);
             try(PreparedStatement statement=query(target,"SELECT setval(pg_get_serial_sequence(?, ?), ?, ?)",prepared.config.timeout)) {
@@ -343,6 +351,8 @@ public final class FleetMigration {
             Connection target=prepared.targets.get(db);target.rollback();
             MigrationCore.transaction(target,()->{
                 // 重查全库并锁住每张目标表，阻止迁移期间意外业务写入。
+                // 固定 schema/锁模式，仅拼接 pg() 白名单校验并引用的表名。
+                // nosemgrep: formatted-sql-string, java.lang.security.audit.formatted-sql-string.formatted-sql-string
                 for(Table table:prepared.tables)if(table.database.equals(db))try(Statement statement=statement(target,prepared.config.timeout)){statement.execute("LOCK TABLE public."+MigrationCore.pg(table.name)+" IN ACCESS EXCLUSIVE MODE");}
                 check(stats(target,prepared.tables,db,false,prepared.config).values().stream().allMatch(s->s.count==0),"TARGET_NOT_EMPTY");
                 check(targetShape(target,db,prepared.tables,prepared.config.timeout).sha256.equals(prepared.shapes.get(db).sha256),"TARGET_SCHEMA_CHANGED");

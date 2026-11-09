@@ -67,6 +67,8 @@ python3 scripts/database/migrate.py --config /secure/migration.json \
 
 receipt 依次记录 PREPARED → COMMIT_INTENT → COMMITTED → VERIFIED，通过受限原子替换、CAS 和 fsync 保存。源当前 AUTO_INCREMENT 计数单独取摘要并绑定计划；目标下一 ID 至少为源 AUTO_INCREMENT 与已迁 MAX(id)+1 的较大值，防止重新分配历史删除/回滚号段。序列 `setval` 不属于可回滚数据事务，因此放在数据 commit 后；校准成功才记 VERIFIED。执行阶段持有独立受限文件锁，拒绝第二个执行者。
 
+SQL 中的库、表、列标识符统一先通过 `[a-z][a-z0-9_]{0,62}` 完整匹配，再由 `MigrationCore.mysql()` / `pg()` 按对应方言引用。标识符属于 SQL 结构，不能用 `?` 替代；行值及序列函数参数仍使用 `PreparedStatement` 绑定。`FleetMigration` 五处 `nosemgrep` 仅针对 `formatted-sql-string` 无法识别上述自定义守卫的误报，保留就地依据，不忽略整个文件或其他规则。
+
 ```bash
 python3 scripts/database/migrate.py --config /secure/migration.json \
   --execute --resume --expected-plan-sha256 <原plan_sha256>
@@ -85,5 +87,7 @@ python3 -m unittest discover -s tests -p test_database_migration.py -v
 ```
 
 回归使用临时私有文件与合成 JDBC proxy：默认计划零写、第二库失败时 rollback 以及保留第一库、显式恢复不重复写入、未知非空拒绝、JSON/Decimal/Boolean/NULL/引号/binary/微秒时间、限制、私有权限/symlink、JSON重复键及异常不泄漏。独立 Java 回归在没有现成 JDK17/固定依赖缓存的环境明确 skip，编译错误不会按缺件跳过；本机有依赖时必须实际执行。真实 synthetic PostgreSQL 验证只在已授权 NAS 隔离库进行，本机不安装或运行 PostgreSQL。
+
+SQL 守卫回归还核对恶意标识符在任何 JDBC prepare/execute 前被拒绝、合法保留字及 63 字符边界、危险正文只进入绑定参数、实际 `LOCK` / `INSERT` / `MAX` 引用，以及序列校准的四项绑定。这些检查使用合成连接，不连接数据库；独立 `sql-guards` 入口用于针对守卫运行回归。
 
 显式提供 `FLEET_PG_TEST_URL`、`FLEET_PG_TEST_USERNAME`、`FLEET_PG_TEST_PASSWORD` 时，同一测试入口还执行 NAS 专用库中的 6 项真实 codec/序列回归，并清理自身随机 schema。测试只接受 `fleet_pg_test_` 前缀的 PG 18 数据库，拒绝七个业务目标；操作者须使用获准的专用测试角色。凭据由受限私有环境注入，不写进命令、测试资源或回执。未提供测试 URL 时该真实数据库用例会 skip，不计为通过；提供 URL 却缺少其它必要变量会失败。临时 schema 清理成功也不代表实际七库迁移已经验收。

@@ -79,12 +79,16 @@ public class MigrationContractTest {
     }
     static final class Jdbc implements InvocationHandler {
         final List<Map<String,Object>> committed=new ArrayList<>(),staged=new ArrayList<>();boolean failInsert;int insertCalls,commits,rollbacks,locks,dataReads;Long maximumBytes;final boolean source;
+        final List<String> preparedSql=new ArrayList<>(),executedSql=new ArrayList<>();
+        final List<Map<Integer,Object>> insertParameters=new ArrayList<>(),sequenceParameters=new ArrayList<>();
+        final String tableName,columnName;final MigrationCore.Kind kind;int createdStatements;Long identityMaximum=7L;
         final Connection connection;
-        Jdbc(boolean source){this.source=source;if(source)committed.add(Map.of("id",7L));connection=(Connection)Proxy.newProxyInstance(getClass().getClassLoader(),new Class[]{Connection.class},this);}
+        Jdbc(boolean source){this(source,"fixture","id",MigrationCore.Kind.INTEGER,7L);}
+        Jdbc(boolean source,String tableName,String columnName,MigrationCore.Kind kind,Object value){this.source=source;this.tableName=tableName;this.columnName=columnName;this.kind=kind;if(source)committed.add(Map.of(columnName,value));connection=(Connection)Proxy.newProxyInstance(getClass().getClassLoader(),new Class[]{Connection.class},this);}
         public Object invoke(Object proxy,Method method,Object[] args)throws Throwable {
             switch(method.getName()) {
-                case "prepareStatement":return statement((String)args[0],true);
-                case "createStatement":return statement(null,false);
+                case "prepareStatement":preparedSql.add((String)args[0]);return statement((String)args[0],true);
+                case "createStatement":createdStatements++;return statement(null,false);
                 case "commit":committed.addAll(staged);staged.clear();commits++;return null;
                 case "rollback":staged.clear();rollbacks++;return null;
                 default:return fallback(method);
@@ -94,23 +98,102 @@ public class MigrationContractTest {
             Map<Integer,Object> parameters=new TreeMap<>();
             return Proxy.newProxyInstance(getClass().getClassLoader(),new Class[]{prepared?PreparedStatement.class:Statement.class},(proxy,method,args)->{
                 String query=sql==null&&args!=null&&args.length>0&&args[0]instanceof String?(String)args[0]:sql;
-                if(method.getName().equals("execute")){if(query.startsWith("LOCK TABLE"))locks++;return false;}
-                if(method.getName().equals("executeUpdate")){insertCalls++;if(failInsert)throw new SQLException(SECRET,"22001",99);staged.add(Map.of("id",parameters.get(1)));return 1;}
-                if(method.getName().equals("executeQuery"))return select(query);
+                if(method.getName().equals("execute")){executedSql.add(query);if(query.startsWith("LOCK TABLE"))locks++;return false;}
+                if(method.getName().equals("executeUpdate")){executedSql.add(query);insertParameters.add(new TreeMap<>(parameters));insertCalls++;if(failInsert)throw new SQLException(SECRET,"22001",99);staged.add(Map.of(columnName,parameters.get(1)));return 1;}
+                if(method.getName().equals("executeQuery")){
+                    executedSql.add(query);
+                    if(query.equals("SELECT setval(pg_get_serial_sequence(?, ?), ?, ?)")){sequenceParameters.add(new TreeMap<>(parameters));return result(List.of(Map.of("value",parameters.get(3))),List.of("value"));}
+                    return select(query);
+                }
                 if(method.getName().startsWith("set")&&args!=null&&args.length==2&&args[0]instanceof Integer)parameters.put((Integer)args[0],args[1]);
                 return fallback(method);
             });
         }
         ResultSet select(String sql) {
             if(sql.startsWith("SELECT count(*)"))return result(List.of(Map.of("n",(long)(committed.size()+staged.size()),"max_bytes",maximumBytes==null?1L:maximumBytes)),List.of("n","max_bytes"));
-            if(sql.contains("information_schema.tables"))return result(List.of(Map.of("table_name","fixture","table_type","BASE TABLE")),List.of());
+            if(sql.startsWith("SELECT max(")){Map<String,Object> row=new HashMap<>();row.put("maximum",identityMaximum);return result(List.of(row),List.of("maximum"));}
+            if(sql.contains("information_schema.tables"))return result(List.of(Map.of("table_name",tableName,"table_type","BASE TABLE")),List.of());
             if(sql.contains("information_schema.columns")) {
-                Map<String,Object> c=new HashMap<>();c.put("table_name","fixture");c.put("column_name","id");c.put("ordinal_position",1);c.put("data_type","bigint");c.put("udt_name","int8");c.put("is_nullable","NO");c.put("numeric_precision",64);c.put("numeric_scale",0);c.put("is_identity","NO");c.put("is_generated","NEVER");return result(List.of(c),List.of());
+                Map<String,Object> c=new HashMap<>();c.put("table_name",tableName);c.put("column_name",columnName);c.put("ordinal_position",1);c.put("data_type",kind==MigrationCore.Kind.STRING?"text":"bigint");c.put("udt_name",kind==MigrationCore.Kind.STRING?"text":"int8");c.put("is_nullable","NO");c.put("numeric_precision",64);c.put("numeric_scale",0);c.put("is_identity","NO");c.put("is_generated","NEVER");return result(List.of(c),List.of());
             }
             if(sql.contains("pg_indexes")||sql.contains("pg_trigger")||sql.contains("pg_sequences"))return result(List.of(),List.of());
-            if(sql.startsWith("SELECT ")){dataReads++;List<Map<String,Object>> rows=new ArrayList<>(committed);rows.addAll(staged);return result(rows,List.of("id"));}
+            if(sql.startsWith("SELECT ")){dataReads++;List<Map<String,Object>> rows=new ArrayList<>(committed);rows.addAll(staged);return result(rows,List.of(columnName));}
             throw new AssertionError("UNEXPECTED_SYNTHETIC_SQL");
         }
+    }
+    static void scanRejected(FleetMigration.Table table,boolean source,FleetMigration.Config config) {
+        Jdbc jdbc=new Jdbc(source);
+        rejected("IDENTIFIER_REJECTED",()->{
+            try{FleetMigration.scan(jdbc.connection,table,source,config,null);}catch(SQLException e){throw new AssertionError("UNEXPECTED_GUARD_SQL");}
+        });
+        check(jdbc.createdStatements==0&&jdbc.preparedSql.isEmpty()&&jdbc.executedSql.isEmpty());
+    }
+    static FleetMigration.Prepared calibration(Jdbc jdbc,String identity,FleetMigration.Config config) {
+        String db=FleetMigration.DATABASES.get(0);
+        var table=new FleetMigration.Table(db,"fixture",List.of(new MigrationCore.Column("id",MigrationCore.Kind.INTEGER,false,true)),List.of(),100L);
+        return new FleetMigration.Prepared(config,null,List.of(table),"1".repeat(64),"2".repeat(64),Map.of(db,jdbc.connection),Map.of(db,new FleetMigration.Shape("3".repeat(64),Set.of(identity),Map.of())),Map.of(),"4".repeat(64));
+    }
+    static void sqlGuards() throws Exception {
+        var config=new FleetMigration.Config(null,Map.of(),null,"0".repeat(64),null,100,4096,10,"synthetic-sql-window");
+        String db=FleetMigration.DATABASES.get(0),longName="a"+"x".repeat(62);
+        List<String> attacks=Arrays.asList(null,"","x\";DROP TABLE fixture;--","x`","x'","x;","x--","x.y","x y","x\ny","x\0y","中文","Uppercase","1first",longName+"x");
+        for(String name:List.of("a","select",longName))test(()->{
+            check(MigrationCore.pg(name).equals("\""+name+"\""));check(MigrationCore.mysql(name).equals("`"+name+"`"));
+        });
+        // 绕过 metadata 构造器直接投递 Table，证明每个 scan 的 SQL 边界仍重新校验。
+        for(String attack:attacks) {
+            for(boolean source:List.of(true,false)) {
+                test(()->scanRejected(new FleetMigration.Table(db,attack,List.of(column("id",MigrationCore.Kind.INTEGER)),List.of()),source,config));
+                test(()->scanRejected(new FleetMigration.Table(db,"fixture",List.of(column(attack,MigrationCore.Kind.INTEGER)),List.of()),source,config));
+            }
+            test(()->scanRejected(new FleetMigration.Table(attack,"fixture",List.of(column("id",MigrationCore.Kind.INTEGER)),List.of()),true,config));
+        }
+        for(String attack:attacks)test(()->{
+            rejected("IDENTIFIER_REJECTED",()->MigrationCore.pg(attack));rejected("IDENTIFIER_REJECTED",()->MigrationCore.mysql(attack));
+        });
+        for(boolean source:List.of(true,false))test(()->{
+            Jdbc jdbc=new Jdbc(source);
+            var table=new FleetMigration.Table(db,longName,List.of(column("select",MigrationCore.Kind.INTEGER)),List.of());
+            try{FleetMigration.scan(jdbc.connection,table,source,config,null);}catch(SQLException e){throw new AssertionError("VALID_IDENTIFIER_SCAN_FAILED");}
+            String quotedColumn=source?"`select`":"\"select\"",relation=source?"`"+db+"`.`"+longName+"`":"public.\""+longName+"\"";
+            check(jdbc.preparedSql.equals(List.of("SELECT "+quotedColumn+" FROM "+relation)));
+            check(jdbc.executedSql.size()==2&&jdbc.executedSql.get(0).endsWith(" FROM "+relation));
+            check(jdbc.executedSql.get(0).contains("OCTET_LENGTH(CAST("+quotedColumn+" AS ")&&jdbc.executedSql.get(1).equals(jdbc.preparedSql.get(0)));
+        });
+        test(()->{
+            Jdbc jdbc=new Jdbc(false);var prepared=calibration(jdbc,"fixture.id",config);
+            try{FleetMigration.calibrate(prepared,db);}catch(SQLException e){throw new AssertionError("CALIBRATION_SQL_FAILED");}
+            String setval="SELECT setval(pg_get_serial_sequence(?, ?), ?, ?)";
+            check(jdbc.preparedSql.equals(List.of(setval))&&jdbc.executedSql.equals(List.of("SELECT max(\"id\") FROM public.\"fixture\"",setval)));
+            check(jdbc.sequenceParameters.equals(List.of(Map.of(1,"public.\"fixture\"",2,"id",3,100L,4,false))));
+        });
+        for(String identity:List.of("fixture\";DROP TABLE fixture;--.id","fixture.id\";DROP TABLE fixture;--"))test(()->{
+            Jdbc jdbc=new Jdbc(false);var prepared=calibration(jdbc,identity,config);
+            rejected("IDENTIFIER_REJECTED",()->{try{FleetMigration.calibrate(prepared,db);}catch(SQLException e){throw new AssertionError("UNEXPECTED_CALIBRATION_SQL");}});
+            check(jdbc.preparedSql.isEmpty()&&jdbc.executedSql.isEmpty());
+        });
+        sqlMigration();
+    }
+    static void sqlMigration() throws Exception {
+        Path dir=Files.createTempDirectory("migration-sql-").toRealPath();Files.setPosixFilePermissions(dir,PosixFilePermissions.fromString("rwx------"));
+        var config=new FleetMigration.Config(null,Map.of(),null,"0".repeat(64),dir,100,4096,10,"synthetic-sql-window");
+        String value="literal ' OR 1=1; DROP TABLE fixture; -- \" ` 中文";
+        var column=new MigrationCore.Column("from",MigrationCore.Kind.STRING,false,false);List<FleetMigration.Table> tables=new ArrayList<>();
+        Map<String,Jdbc> jdbc=new TreeMap<>();Map<String,Connection> targets=new TreeMap<>();Map<String,FleetMigration.Shape> shapes=new TreeMap<>();Map<String,Map<String,FleetMigration.Stat>> sourceStats=new TreeMap<>();
+        Jdbc source=new Jdbc(true,"select","from",MigrationCore.Kind.STRING,value);
+        for(String db:FleetMigration.DATABASES){Jdbc target=new Jdbc(false,"select","from",MigrationCore.Kind.STRING,value);jdbc.put(db,target);targets.put(db,target.connection);tables.add(new FleetMigration.Table(db,"select",List.of(column),List.of(Map.of("DATA_TYPE","text"))));}
+        for(String db:FleetMigration.DATABASES){shapes.put(db,FleetMigration.targetShape(targets.get(db),db,tables,10));sourceStats.put(db,FleetMigration.stats(source.connection,tables,db,true,config));}
+        var prepared=new FleetMigration.Prepared(config,source.connection,tables,"1".repeat(64),"2".repeat(64),targets,shapes,sourceStats,"3".repeat(64));
+        test(()->{
+            try{check(FleetMigration.run(prepared,true,false,prepared.planSha()).get("status").equals("verified"));}catch(SQLException e){throw new AssertionError("BOUND_DATA_MIGRATION_FAILED");}
+            for(Jdbc target:jdbc.values()) {
+                check(target.executedSql.stream().filter(sql->sql.startsWith("LOCK TABLE")).toList().equals(List.of("LOCK TABLE public.\"select\" IN ACCESS EXCLUSIVE MODE")));
+                check(target.preparedSql.stream().filter(sql->sql.startsWith("INSERT INTO")).toList().equals(List.of("INSERT INTO public.\"select\" (\"from\") VALUES (?)")));
+                check(target.insertParameters.equals(List.of(Map.of(1,value)))&&target.committed.equals(List.of(Map.of("from",value))));
+                check(target.preparedSql.stream().noneMatch(sql->sql.contains(value))&&target.executedSql.stream().noneMatch(sql->sql.contains(value)));
+            }
+            check(source.preparedSql.stream().noneMatch(sql->sql.contains(value))&&source.executedSql.stream().noneMatch(sql->sql.contains(value)));
+        });
     }
     static void migration() throws Exception {
         Path dir=Files.createTempDirectory("migration-transaction-").toRealPath();Files.setPosixFilePermissions(dir,PosixFilePermissions.fromString("rwx------"));
@@ -137,5 +220,5 @@ public class MigrationContractTest {
             rejected("RESUME_CONTENT_MISMATCH",()->FleetMigration.guardReceipt(prepared,first,FleetMigration.receipt(prepared,first,"COMMITTED"),empty,true));
         });
     }
-    public static void main(String[] args) throws Exception {codecs();privateFiles();migration();System.out.println(MigrationCore.JSON.writeValueAsString(Map.of("tests",tests,"failures",0,"canonical_probe",MigrationCore.fingerprint(Map.of("z",List.of(Map.of("count",1L),Map.of("x","NULL")),"a",7)))));}
+    public static void main(String[] args) throws Exception {if(args.length==0){codecs();privateFiles();migration();}else check(Arrays.equals(args,new String[]{"sql-guards"}));sqlGuards();System.out.println(MigrationCore.JSON.writeValueAsString(Map.of("tests",tests,"failures",0,"canonical_probe",MigrationCore.fingerprint(Map.of("z",List.of(Map.of("count",1L),Map.of("x","NULL")),"a",7)))));}
 }
