@@ -16,7 +16,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from acceptance_core import AcceptanceError, Span, _protocol, business_result, decode_stream, parse_logs, parse_traces, reconcile, validate_spec
+from acceptance_core import AcceptanceError, Span, _protocol, business_result, decode_stream, parse_logs, parse_traces, reconcile, sse_evidence, validate_spec
 from acceptance_run import Backend, ROOT, fetch, headers_for, load_config, manifest, private_bytes, private_json, read_ledger, readback, render, safe_write, send_one
 
 
@@ -451,7 +451,10 @@ class PrivateExecutionTests(unittest.TestCase):
         spec["expected"]["span_assertions"] = [{"service": "message", "attributes": {"business.outcome": {"op": "equals", "value": "cancelled"}}}]
         spec["expected"]["log_assertions"] = [{"service": "message", "field": "outcome", "op": "equals", "value": "cancelled"}]
         config = {"business": {"base_url": "http://example.invalid"}, "requests": [spec]}
-        with patch("acceptance_run.fetch", return_value=(200, b'data: synthetic-only\n\n')) as transport:
+        def close_early(*args, **kwargs):
+            kwargs["response_state"].update(response_complete=False, client_closed=True)
+            return 200, b'data: synthetic-only\n\n'
+        with patch("acceptance_run.fetch", side_effect=close_early) as transport:
             result = send_one(config, spec, record)
         self.assertEqual(transport.call_args.kwargs["cancel_after_bytes"], 32)
         self.assertTrue(result["client_cancelled"])
@@ -459,6 +462,86 @@ class PrivateExecutionTests(unittest.TestCase):
         self.assertFalse(failed["passed"])
         self.assertIn("BUSINESS_SPAN_ASSERTION_FAILED", failed["failures"])
         self.assertIn("LOG_PROJECTION_ASSERTION_FAILED", failed["failures"])
+
+    def test_sse_http_200_error_data_or_event_is_never_business_success_or_cancellation(self):
+        for raw in ('data: [请求参数错误] synthetic-private-error\n\n'.encode(),
+                    b'event: error\ndata: synthetic-private-error\n\n'):
+            spec, record, spans, logs = fixture()
+            spec.update(response_mode="sse", cancel_after_bytes=8192)
+            spec["expected"].pop("json_assertions")
+            spec["expected"]["span_assertions"] = [{"service": "message", "name": "fixture.complete", "attributes": {"outcome": {"op": "equals", "value": "cancelled"}}}]
+            def complete_error(*args, **kwargs):
+                kwargs["response_state"].update(response_complete=True, client_closed=False)
+                return 200, raw
+            with patch("acceptance_run.fetch", side_effect=complete_error):
+                result = send_one({"business": {"base_url": "http://example.invalid"}}, spec, record)
+            self.assertFalse(result["business_ok"])
+            self.assertFalse(result["client_cancelled"])
+            self.assertTrue(result["sse_evidence"]["explicit_error"])
+            self.assertNotIn("synthetic-private-error", json.dumps(result))
+
+    def test_sse_normal_eof_requires_actual_named_business_completion(self):
+        spec, record, spans, logs = fixture()
+        spec["response_mode"] = "sse"
+        spec["expected"].pop("json_assertions")
+        spec["expected"]["span_assertions"] = [{"service": "message", "name": "fixture.complete", "attributes": {"outcome": {"op": "equals", "value": "success"}}}]
+        def complete(*args, **kwargs):
+            kwargs["response_state"].update(response_complete=True, client_closed=False)
+            return 200, b'data: synthetic-output-never-store\n\n'
+        with patch("acceptance_run.fetch", side_effect=complete):
+            result = send_one({"business": {"base_url": "http://example.invalid"}}, spec, record)
+        self.assertFalse(result["business_ok"])
+        missing = reconcile(spec, result, spans, logs, {TRACE})
+        self.assertFalse(missing["business_ok"])
+        finished = replace(span(6, "message", 3, kind=1), name="fixture.complete", attrs={"outcome": "success"})
+        good = reconcile(spec, result, spans + [finished], logs, {TRACE})
+        self.assertTrue(good["business_ok"])
+        self.assertTrue(good["passed"], good)
+        self.assertNotIn("synthetic-output-never-store", json.dumps(good))
+
+    def test_real_http_sse_eof_and_active_close_are_distinct_including_utf8_boundary(self):
+        short_error = 'data: [请求参数错误] synthetic-error\n\n'.encode()
+        long_answer = ('data: ' + '合成文本' * 200 + '\n\n').encode()
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = short_error if self.path == '/error' else long_answer
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/event-stream')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                try:
+                    self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+            def log_message(self, *args):
+                pass
+        server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        base = f'http://127.0.0.1:{server.server_port}'
+        with patch.dict(os.environ, {'NO_PROXY': '127.0.0.1'}):
+            state = {}
+            status, raw = fetch(base + '/error', cancel_after_bytes=128, response_state=state)
+            self.assertEqual(status, 200)
+            self.assertEqual(state, {'response_complete': True, 'client_closed': False})
+            self.assertTrue(sse_evidence(raw, state)['explicit_error'])
+            for limit, data_received in ((8, False), (128, True)):
+                state = {}
+                _, raw = fetch(base + '/answer', cancel_after_bytes=limit, response_state=state)
+                self.assertEqual(len(raw), limit)
+                self.assertEqual(state, {'response_complete': False, 'client_closed': True})
+                evidence = sse_evidence(raw, state)
+                self.assertEqual(evidence['data_received'], data_received)
+                self.assertFalse(evidence['explicit_error'])
+            state = {}
+            _, raw = fetch(base + '/answer', response_state=state)
+            self.assertEqual(state, {'response_complete': True, 'client_closed': False})
+
+    def test_sse_untrusted_json_types_do_not_crash_or_enter_evidence(self):
+        evidence = sse_evidence(b'data: {"type":[],"content":"synthetic-private"}\n\n', {'response_complete': True})
+        self.assertFalse(evidence['explicit_error'])
+        self.assertNotIn('synthetic-private', json.dumps(evidence))
 
 
 if __name__ == "__main__":

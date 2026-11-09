@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import codecs
 import json
 import re
 from dataclasses import dataclass
@@ -199,6 +200,90 @@ def business_result(raw: bytes, status: int, spec: dict) -> bool:
     return all(matches(lookup(document, item["path"]), item) for item in assertions)
 
 
+SSE_EVIDENCE_KEYS = frozenset({"data_received", "explicit_error", "explicit_complete", "response_complete", "client_closed"})
+
+
+def sse_evidence(raw: bytes, transport: dict) -> dict:
+    """只保留协议布尔；正文在内存分类后丢弃，不能把 HTTP200 或收到数据当业务成功。"""
+    complete = transport.get("response_complete") is True
+    result = {"data_received": False, "explicit_error": False, "explicit_complete": False,
+              "response_complete": complete, "client_closed": transport.get("client_closed") is True}
+    try:
+        text = codecs.getincrementaldecoder("utf-8")(errors="strict").decode(raw, final=complete)
+    except UnicodeError:
+        result["explicit_error"] = True
+        return result
+    event, data = "message", []
+
+    def inspect():
+        value = "\n".join(data).lstrip()
+        result["data_received"] |= bool(value)
+        result["explicit_error"] |= event.lower() in {"error", "failure", "failed"}
+        result["explicit_complete"] |= event.lower() in {"complete", "completed", "done"} or value == "[DONE]"
+        result["explicit_error"] |= value.startswith(("[请求参数错误]", "[模型调用失败]"))
+        if value.startswith("{"):
+            try:
+                document = json.loads(value)
+            except (ValueError, TypeError):
+                return
+            if isinstance(document, dict):
+                kind = document.get("type")
+                result["explicit_error"] |= document.get("error") is not None or isinstance(kind, str) and kind in {"error", "failure", "failed"}
+
+    for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if not line:
+            inspect()
+            event, data = "message", []
+        elif line.startswith("event:"):
+            event = line[6:].lstrip(" ")
+        elif line.startswith("data:"):
+            data.append(line[5:].removeprefix(" "))
+    inspect()
+    return result
+
+
+def valid_sse_evidence(value: Any) -> bool:
+    return isinstance(value, dict) and set(value) == SSE_EVIDENCE_KEYS and all(type(v) is bool for v in value.values())
+
+
+def sse_business_confirmed(spec: dict, record: dict, actual: dict[str, Span], logs: list[dict], failures: set[str]) -> bool:
+    evidence = record.get("sse_evidence")
+    if not valid_sse_evidence(evidence) or not evidence["data_received"] or evidence["explicit_error"]:
+        return False
+    if record.get("http_status") not in spec["expected"]["statuses"]:
+        return False
+    cancelled = bool(spec.get("cancel_after_bytes"))
+    if cancelled:
+        if not (record.get("client_cancelled") is True and evidence["client_closed"] and not evidence["response_complete"] and not evidence["explicit_complete"]):
+            return False
+    elif not evidence["response_complete"] or evidence["client_closed"]:
+        return False
+    outcome = "cancelled" if cancelled else "success"
+    terminal = [a for a in spec["expected"].get("span_assertions", []) if a.get("name") and any(
+        a.get("attributes", {}).get(key) == {"op": "equals", "value": outcome} for key in ("outcome", "business.outcome"))]
+    if not terminal or any(code.startswith("BUSINESS_") for code in failures):
+        return False
+    # AI data-only SSE 没有 in-band complete；必须读回同一请求的三层真实完成证据。
+    if {"ai", "ai-agent"} <= set(spec["expected"]["services"]):
+        for service, name, key in (("ai", "ai.dialogue.stream", "business.outcome"),
+                                   ("ai-agent", "ai.agent.execution", "outcome"), ("ai-agent", "ai.model.call", "outcome")):
+            matched = [s for s in actual.values() if s.service == service and s.name == name and s.attrs.get(key) == outcome and not s.status_error]
+            if len(matched) != 1:
+                return False
+            if name == "ai.model.call":
+                joined = 0
+                for log in logs:
+                    if log_field(log, "event") != "ai.model.call" or log_field(log, "outcome") != outcome:
+                        continue
+                    try:
+                        joined += log_identity(log) == (matched[0].trace, matched[0].span)
+                    except AcceptanceError:
+                        return False
+                if joined != 1:
+                    return False
+    return True
+
+
 def validate_spec(spec: dict) -> None:
     if not SAFE_NAME.fullmatch(spec.get("case", "")) or not SAFE_ROUTE.fullmatch(spec.get("route", "")):
         raise AcceptanceError("INVALID_SAFE_MANIFEST_METADATA")
@@ -267,7 +352,7 @@ def reconcile(spec: dict, record: dict, spans: list[Span], logs: list[dict], sea
         failures.add("REQUEST_NOT_SENT")
     if not record.get("completed"):
         failures.add("REQUEST_NOT_COMPLETED")
-    if not record.get("business_ok"):
+    if spec.get("response_mode") != "sse" and not record.get("business_ok"):
         failures.add("BUSINESS_ASSERTION_FAILED")
     trace = record["trace_id"]
     actual = {span.span: span for span in spans if span.trace == trace}
@@ -433,9 +518,16 @@ def reconcile(spec: dict, record: dict, spans: list[Span], logs: list[dict], sea
                 failures.add("BUSINESS_EVENT_ASSERTION_FAILED")
     if forbidden_values and any(needle in json.dumps(log, ensure_ascii=False) for needle in forbidden_values for log in logs):
         failures.add("SYNTHETIC_SENTINEL_LEAK")
+    business_ok = record.get("business_ok")
+    if spec.get("response_mode") == "sse":
+        business_ok = sse_business_confirmed(spec, record, actual, logs, failures)
+        if not business_ok:
+            failures.add("BUSINESS_ASSERTION_FAILED")
     identities = sorted({(s.service, s.version) for s in actual.values() if s.service in SERVICES and SAFE_VERSION.fullmatch(s.version)})
     return {
         **{key: record.get(key) for key in ("request_id", "case", "trace_id", "parent_span_id", "sampled", "sent", "completed", "http_status", "business_ok", "client_cancelled")},
+        "business_ok": business_ok,
+        **({"sse_evidence": record["sse_evidence"]} if valid_sse_evidence(record.get("sse_evidence")) else {}),
         "route": spec["route"], "service_versions": [{"service": service, "version": version} for service, version in identities],
         "span_count": len(actual), "edges_expected": len(expected.get("edges", [])), "edges_joined": edge_count,
         "http_spans": len(http_spans), "terminal_logs_joined": joined,

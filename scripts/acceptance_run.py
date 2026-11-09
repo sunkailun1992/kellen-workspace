@@ -26,7 +26,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from acceptance_core import AcceptanceError, business_result, decode_stream, identity, parse_logs, parse_traces, reconcile, validate_spec
+from acceptance_core import (AcceptanceError, business_result, decode_stream, identity, parse_logs, parse_traces,
+                             reconcile, sse_evidence, valid_sse_evidence, validate_spec)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -106,7 +107,7 @@ def checked_base(value: str) -> str:
 
 
 def fetch(url: str, *, method: str = "GET", headers: dict | None = None, body: bytes | None = None, timeout: float = 15,
-          cancel_after_bytes: int | None = None) -> tuple[int, bytes]:
+          cancel_after_bytes: int | None = None, response_state: dict | None = None) -> tuple[int, bytes]:
     request = urllib.request.Request(url, data=body, method=method, headers=headers or {})
     try:
         try:
@@ -114,7 +115,21 @@ def fetch(url: str, *, method: str = "GET", headers: dict | None = None, body: b
         except urllib.error.HTTPError as error:
             response = error
         with response:
-            raw = response.read1(cancel_after_bytes) if cancel_after_bytes else response.read(MAX_RESPONSE + 1)
+            if cancel_after_bytes:
+                chunks, remaining, eof = [], cancel_after_bytes, False
+                while remaining:
+                    chunk = response.read1(remaining)
+                    if not chunk:
+                        eof = True
+                        break
+                    chunks.append(chunk)
+                    remaining -= len(chunk)
+                raw = b"".join(chunks)
+                eof = eof or response.length == 0 or response.isclosed()
+            else:
+                raw, eof = response.read(MAX_RESPONSE + 1), True
+            if response_state is not None:
+                response_state.update(response_complete=eof, client_closed=bool(cancel_after_bytes and not eof))
             if len(raw) > MAX_RESPONSE:
                 raise AcceptanceError("RESPONSE_TOO_LARGE")
             return response.code, raw
@@ -236,14 +251,17 @@ def send_one(config: dict, spec: dict, record: dict) -> dict:
         headers["Content-Type"] = "application/json"
     record = {**record, "sent": True}
     try:
+        transport = {}
         status, raw = fetch(checked_base(config["business"]["base_url"]) + spec["path"], method=spec["method"],
                             headers=headers, body=payload, timeout=config.get("timeout_seconds", 30),
-                            cancel_after_bytes=spec.get("cancel_after_bytes"))
-        record.update(completed=True, http_status=status, business_ok=business_result(raw, status, spec["expected"]))
-        if spec.get("cancel_after_bytes"):
-            record["client_cancelled"] = bool(raw)
-            if not raw:
-                record["business_ok"] = False
+                            cancel_after_bytes=spec.get("cancel_after_bytes"), response_state=transport)
+        record.update(completed=True, http_status=status, business_ok=False)
+        if spec.get("response_mode") == "sse":
+            evidence = sse_evidence(raw, transport)
+            record["sse_evidence"] = evidence
+            record["client_cancelled"] = evidence["client_closed"] and not evidence["explicit_error"] and not evidence["explicit_complete"]
+        else:
+            record["business_ok"] = business_result(raw, status, spec["expected"])
     except AcceptanceError as error:
         record["transport_reason"] = str(error)
     return record
@@ -335,7 +353,7 @@ def read_ledger(path: Path, config: dict) -> tuple[list[dict], datetime]:
         records = report["requests"]
         if len(records) != len(config["requests"]):
             raise AcceptanceError("REQUEST_LEDGER_MISMATCH")
-        allowed = ("request_id", "case", "trace_id", "parent_span_id", "sampled", "sent", "completed", "http_status", "business_ok", "client_cancelled")
+        allowed = ("request_id", "case", "trace_id", "parent_span_id", "sampled", "sent", "completed", "http_status", "business_ok", "client_cancelled", "sse_evidence")
         result = []
         for index, (record, spec) in enumerate(zip(records, config["requests"]), 1):
             if record.get("case") != spec["case"] or record.get("request_id") != f"request-{index:03d}":
@@ -347,6 +365,8 @@ def read_ledger(path: Path, config: dict) -> tuple[list[dict], datetime]:
             if type(record.get("sampled")) is not int or record["sampled"] not in (0, 1):
                 raise AcceptanceError("LEDGER_SCHEMA_INVALID")
             if record.get("client_cancelled") is not None and type(record["client_cancelled"]) is not bool:
+                raise AcceptanceError("LEDGER_SCHEMA_INVALID")
+            if record.get("sse_evidence") is not None and not valid_sse_evidence(record["sse_evidence"]):
                 raise AcceptanceError("LEDGER_SCHEMA_INVALID")
             status = record.get("http_status")
             if status is not None and (type(status) is not int or not 100 <= status <= 599):
