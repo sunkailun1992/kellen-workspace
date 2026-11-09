@@ -121,7 +121,13 @@ FF合并同时使用`--no-overwrite-ignore`：若远端开始跟踪与本机igno
 
 `.run/`提供9个服务的共享Gradle `bootRun`入口；入口通过根构建调用`:服务名:bootRun`，每个服务的工作目录为自己的项目目录。启动前，按子项目说明准备本机配置和所需外部服务。本仓库不提供真实凭据，也不自动启动数据库、中间件或业务服务。
 
-`admin-web`不加入Java构建，在自己的目录中使用既有前端命令；IDEA中的Git映射不代表其依赖安装、打包或运行已经完成。
+`idea.sh`同时为清单中的Web前端生成本机忽略的`.idea/workspace-web/admin-web.iml`，并将它合并进`.idea/modules.xml`。前端作为独立`WEB_MODULE`出现在Project树，新建内容根使用复用目录的真实绝对`file://`路径，排除`node_modules`、`dist`和`coverage`；真实路径只写入被忽略的本机配置。旧版受管`.iml`中的`$PROJECT_DIR$`内容根及其下URL会迁移为绝对路径，避免IDEA未展开宏导致`Watch roots should be absolute`；IDE自身改写的等价`$MODULE_DIR$`和绝对路径保留。已有Java/自定义模块、用户设置及已登记的同目录Web模块保留；重复执行幂等，`--dry-run`不写文件，损坏XML或输出symlink会停止并保留原文件。
+
+IDE元数据使用标准库的受限Expat解析入口：拒绝DTD、自定义/外部实体和参数实体，UTF-16等编码也使用同一规则；单文件读取与格式化输出上限2MiB，单次运行按真实路径缓存解析结果，最多读取512个文件、原始输入累计8MiB，重复模块引用不重复解析和扫描。每文件深度128、元素及注释合计50000个。命名空间展开前先限制每标签256个属性、名称1024字符、命名空间URI512字符及总声明128个，再限制展开后的名称、值、文本和注释合计8MiB字符。合法注释、命名空间与XML预定义转义保留；所有输入和候选输出通过后才写文件，拒绝错误不包含XML正文或外部标识。无需安装第三方Python包。
+
+已打开IDEA时，运行脚本后执行File → Reload All from Disk，等待模块模型刷新，再在Project树展开`admin-web`并核对`src`和`package.json`。生成文件通过不等于窗口已显示；若仍未加载，先检查IDE日志与内容根路径，再通过File → New → Module from Existing Sources导入生成的`.iml`，或关闭对应工作区、重跑脚本后重新打开。前端模块不依赖根Gradle导入，也不带Gradle外部系统标记。
+
+`admin-web`继续使用自己的前端工具链，不加入Java构建。在其目录使用既有前端命令；Project树可见不代表依赖安装、打包或运行已经验收。
 
 移动端和微信小程序不在总工作区范围内。历史`ai-wechat-mini-programs`目录或symlink保留并继续被Git忽略，脚本不下载、更新或检查该仓库。`idea.sh`会移除此前生成的该仓精确Git映射（工作区路径及symlink真实目标），保留其他用户映射；根IDEA模块也排除该目录。已有IDEA会话请执行脚本后重新加载根Gradle模型。
 

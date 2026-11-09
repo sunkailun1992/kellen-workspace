@@ -13,9 +13,20 @@ import sys
 import tempfile
 from urllib.parse import urlsplit
 import xml.etree.ElementTree as ET
+from xml.parsers import expat
 
 ROOT = Path(__file__).resolve().parent.parent
 EXCLUDED_REPOSITORIES = ('ai-wechat-mini-programs',)
+IDEA_XML_MAX_BYTES = 2 * 1024 * 1024
+IDEA_XML_MAX_INPUT_BYTES = 8 * 1024 * 1024
+IDEA_XML_MAX_INPUT_FILES = 512
+IDEA_XML_MAX_DEPTH = 128
+IDEA_XML_MAX_NODES = 50000
+IDEA_XML_MAX_ATTRIBUTES = 256
+IDEA_XML_MAX_NAME_CHARS = 1024
+IDEA_XML_MAX_NAMESPACE_CHARS = 512
+IDEA_XML_MAX_NAMESPACES = 128
+IDEA_XML_MAX_EXPANDED_CHARS = 8 * 1024 * 1024
 
 
 class WorkspaceError(Exception):
@@ -185,15 +196,316 @@ def update(root, repo, args):
     return dict(state='up-to-date', **state)
 
 
+def read_idea_bytes(path):
+    """Bound every read of local IDE metadata, including idempotence comparisons."""
+    if path.is_symlink() or not path.is_file():
+        raise WorkspaceError('IDEA input must be a local regular file.')
+    with path.open('rb') as source:
+        data = source.read(IDEA_XML_MAX_BYTES + 1)
+    if len(data) > IDEA_XML_MAX_BYTES:
+        raise WorkspaceError('IDEA XML exceeds the file size limit.')
+    return data
+
+
+class IdeaXmlInputs:
+    """Share a bounded, canonical-path parse cache for one IDEA operation."""
+
+    def __init__(self):
+        self.documents = {}
+        self.total_bytes = 0
+
+    def parse(self, path):
+        # Check the original spelling too: cached aliases must not admit symlinks.
+        if path.is_symlink() or not path.is_file():
+            raise WorkspaceError('IDEA input must be a local regular file.')
+        canonical = path.resolve()
+        if canonical not in self.documents:
+            if len(self.documents) >= IDEA_XML_MAX_INPUT_FILES:
+                raise WorkspaceError('IDEA XML exceeds the input file count limit.')
+            data = read_idea_bytes(path)
+            self.total_bytes += len(data)
+            if self.total_bytes > IDEA_XML_MAX_INPUT_BYTES:
+                raise WorkspaceError('IDEA XML exceeds the total input size limit.')
+            # Count invalid files too when a custom .iml is safely skipped.
+            self.documents[canonical] = None
+            self.documents[canonical] = parse_idea_xml_bytes(data)
+        document = self.documents[canonical]
+        if document is None:
+            raise ET.ParseError('Invalid IDEA XML.')
+        return document
+
+
+def parse_idea_xml(path, inputs=None):
+    return (inputs if inputs is not None else IdeaXmlInputs()).parse(path)
+
+
+def parse_idea_xml_bytes(data):
+    """Parse bounded XML with declarations denied and namespace expansion budgeted.
+
+    A raw Expat pass checks attribute/namespace bounds before the namespace-aware
+    parser can allocate expanded attribute names. Both passes use the same bytes.
+    """
+    if len(data) > IDEA_XML_MAX_BYTES:
+        raise WorkspaceError('IDEA XML exceeds the file size limit.')
+
+    def forbidden(*unused):
+        raise WorkspaceError('IDEA XML DTD and entity declarations are forbidden.')
+
+    def parser_for(namespace_separator=None):
+        parser = expat.ParserCreate(namespace_separator=namespace_separator)
+        parser.StartDoctypeDeclHandler = forbidden
+        parser.EntityDeclHandler = forbidden
+        parser.ExternalEntityRefHandler = forbidden
+        if not parser.SetParamEntityParsing(expat.XML_PARAM_ENTITY_PARSING_NEVER):
+            raise WorkspaceError('Cannot enforce IDEA XML entity protection.')
+        return parser
+
+    depth = nodes = namespaces = 0
+
+    def node():
+        nonlocal nodes
+        nodes += 1
+        if nodes > IDEA_XML_MAX_NODES:
+            raise WorkspaceError('IDEA XML exceeds the node limit.')
+
+    def start(name, attributes):
+        nonlocal depth, namespaces
+        node()
+        depth += 1
+        if depth > IDEA_XML_MAX_DEPTH or len(attributes) > IDEA_XML_MAX_ATTRIBUTES:
+            raise WorkspaceError('IDEA XML exceeds the structural limits.')
+        if len(name) > IDEA_XML_MAX_NAME_CHARS or any(
+                len(key) > IDEA_XML_MAX_NAME_CHARS for key in attributes):
+            raise WorkspaceError('IDEA XML exceeds the name length limit.')
+        for key, value in attributes.items():
+            if key == 'xmlns' or key.startswith('xmlns:'):
+                namespaces += 1
+                if (namespaces > IDEA_XML_MAX_NAMESPACES
+                        or len(value) > IDEA_XML_MAX_NAMESPACE_CHARS):
+                    raise WorkspaceError('IDEA XML exceeds the namespace limits.')
+
+    def end(unused):
+        nonlocal depth
+        depth -= 1
+
+    preflight = parser_for()
+    preflight.StartElementHandler = start
+    preflight.EndElementHandler = end
+    preflight.CommentHandler = lambda unused: node()
+    builder = ET.TreeBuilder(insert_comments=True)
+    retained = 0
+
+    def budget(value):
+        nonlocal retained
+        retained += len(value)
+        if retained > IDEA_XML_MAX_EXPANDED_CHARS:
+            raise WorkspaceError('IDEA XML exceeds the expanded character limit.')
+
+    def expanded(name):
+        return '{' + name if '}' in name else name
+
+    def build_start(name, attributes):
+        name = expanded(name)
+        budget(name)
+        converted = {}
+        for key, value in attributes.items():
+            key = expanded(key)
+            budget(key)
+            budget(value)
+            converted[key] = value
+        builder.start(name, converted)
+
+    def build_data(value):
+        budget(value)
+        builder.data(value)
+
+    def build_comment(value):
+        budget(value)
+        builder.comment(value)
+
+    parser = parser_for('}')
+    parser.StartElementHandler = build_start
+    parser.EndElementHandler = lambda name: builder.end(expanded(name))
+    parser.CharacterDataHandler = build_data
+    parser.CommentHandler = build_comment
+    try:
+        preflight.Parse(data, True)
+        parser.Parse(data, True)
+        return ET.ElementTree(builder.close())
+    except (expat.ExpatError, ValueError, LookupError):
+        # Never return parser diagnostics containing input values or external IDs.
+        raise ET.ParseError('Invalid IDEA XML.') from None
+
+
+def idea_xml(path, tag, inputs=None, **attributes):
+    """Read local IDE metadata without following output links or replacing invalid input."""
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        raise WorkspaceError('IDEA output must be a local regular file.')
+    if not path.exists():
+        return ET.ElementTree(ET.Element(tag, attributes))
+    try:
+        tree = parse_idea_xml(path, inputs)
+    except (ET.ParseError, OSError):
+        raise WorkspaceError('Existing IDEA module metadata is invalid; preserved it.') from None
+    if tree.getroot().tag != tag:
+        raise WorkspaceError('Existing IDEA module metadata has an invalid root; preserved it.')
+    return tree
+
+
+def idea_content_path(root, module_path, value):
+    """Resolve a module content URL in its own file context, including IDEA macros."""
+    if not value.startswith('file://'):
+        return None
+    expanded = (value.removeprefix('file://').replace('$PROJECT_DIR$', str(root.resolve()))
+                .replace('$MODULE_DIR$', str(module_path.resolve().parent)))
+    if '$' in expanded or not Path(expanded).is_absolute():
+        return None
+    return Path(expanded).resolve()
+
+
+def web_module_plan(root, repos, inputs=None):
+    """Plan standalone web modules; Gradle remains responsible only for Java builds."""
+    web = [repo for repo in repos if repo['kind'] == 'web']
+    if not web:
+        return [], []
+    inputs = inputs if inputs is not None else IdeaXmlInputs()
+    directory = root / '.idea' / 'workspace-web'
+    if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
+        raise WorkspaceError('IDEA web module directory must be a local directory.')
+    registry = root / '.idea' / 'modules.xml'
+    project = idea_xml(registry, 'project', inputs=inputs, version='4')
+    component = project.getroot().find("component[@name='ProjectModuleManager']")
+    if component is None:
+        component = ET.SubElement(project.getroot(), 'component', name='ProjectModuleManager')
+    modules = component.find('modules')
+    if modules is None:
+        modules = ET.SubElement(component, 'modules')
+    outputs, configured = [], []
+    for repo in web:
+        source = root / repo['name']
+        validate_repository(source, repo)
+        module_path = directory / (repo['name'] + '.iml')
+        # Respect an already attached custom web module for the same real checkout.
+        # Never rewrite that user's .iml or claim ownership of unrelated modules.
+        existing = None
+        inspected = set()
+        for item in modules.findall('module'):
+            value = item.get('filepath', item.get('fileurl', '').removeprefix('file://'))
+            path = Path(value.replace('$PROJECT_DIR$', str(root), 1))
+            if (not path.is_absolute() or path.suffix != '.iml' or path.is_symlink()
+                    or not path.is_file() or path.resolve() == module_path.resolve()):
+                continue
+            canonical = path.resolve()
+            if canonical in inspected:
+                continue
+            inspected.add(canonical)
+            try:
+                custom = parse_idea_xml(path, inputs).getroot()
+            except (ET.ParseError, OSError):
+                continue
+            if custom.tag != 'module' or custom.get('type') != 'WEB_MODULE':
+                continue
+            for content in custom.findall('.//content'):
+                if idea_content_path(root, path, content.get('url', '')) == source.resolve():
+                    existing = item
+                    break
+            if existing is not None:
+                break
+        if existing is not None:
+            for item in list(modules.findall('module')):
+                value = item.get('filepath', item.get('fileurl', '').removeprefix('file://'))
+                path = Path(value.replace('$PROJECT_DIR$', str(root), 1))
+                if path.is_absolute() and path.resolve() == module_path.resolve():
+                    modules.remove(item)
+            configured.append(dict(name=repo['name'], module=existing.get('filepath'),
+                                   state='existing-custom-module'))
+            continue
+        module = idea_xml(module_path, 'module', inputs=inputs, type='WEB_MODULE', version='4')
+        if module.getroot().get('type') != 'WEB_MODULE':
+            raise WorkspaceError('Existing frontend module type conflicts; preserved it.')
+        manager = module.getroot().find("component[@name='NewModuleRootManager']")
+        if manager is None:
+            manager = ET.SubElement(module.getroot(), 'component', name='NewModuleRootManager')
+        # Module files do not reliably expand PROJECT_DIR in content/watch roots.
+        # Only ignored local metadata contains this dynamically resolved path.
+        content_url = 'file://' + str(source.resolve())
+        contents = manager.findall('content')
+        content = next((item for item in contents if idea_content_path(
+            root, module_path, item.get('url', '')) == source.resolve()), None)
+        if content is None:
+            if contents:
+                raise WorkspaceError('Existing frontend content root conflicts; preserved it.')
+            content = ET.SubElement(manager, 'content', url=content_url)
+        else:
+            previous = content.get('url')
+            if '$PROJECT_DIR$' in previous:
+                # Repair only our owned module and URLs under its verified root.
+                for item in content.iter():
+                    value = item.get('url', '')
+                    if value == previous or value.startswith(previous + '/'):
+                        item.set('url', content_url + value[len(previous):])
+            else:
+                # IDEA may serialize an equivalent MODULE_DIR or absolute URL.
+                content_url = previous
+        for name in ('node_modules', 'dist', 'coverage'):
+            value = content_url + '/' + name
+            if not any(item.get('url') == value for item in content.findall('excludeFolder')):
+                ET.SubElement(content, 'excludeFolder', url=value)
+        if manager.find("orderEntry[@type='sourceFolder']") is None:
+            ET.SubElement(manager, 'orderEntry', type='sourceFolder', forTests='false')
+        filepath = '$PROJECT_DIR$/.idea/workspace-web/' + repo['name'] + '.iml'
+        matching = []
+        for item in modules.findall('module'):
+            value = item.get('filepath', item.get('fileurl', '').removeprefix('file://'))
+            expanded = value.replace('$PROJECT_DIR$', str(root), 1)
+            if Path(expanded).is_absolute() and Path(expanded).resolve() == module_path.resolve():
+                matching.append(item)
+        entry = matching[0] if matching else ET.SubElement(modules, 'module')
+        entry.set('filepath', filepath)
+        entry.set('fileurl', 'file://' + filepath)
+        for duplicate in matching[1:]:
+            modules.remove(duplicate)
+        outputs.append((module_path, module))
+        configured.append(dict(name=repo['name'], module=filepath, content_root=content_url))
+    outputs.append((registry, project))
+    return outputs, configured
+
+
+def idea_xml_bytes(tree):
+    """Budget formatted output before any of the planned files are written."""
+    ET.indent(tree, space='  ')
+    data = ET.tostring(tree.getroot(), encoding='UTF-8', xml_declaration=True) + b'\n'
+    if len(data) > IDEA_XML_MAX_BYTES:
+        raise WorkspaceError('Generated IDEA XML exceeds the file size limit.')
+    # Added mappings/modules must remain acceptable to the next invocation too.
+    parse_idea_xml_bytes(data)
+    return data
+
+
+def write_idea_xml(path, data):
+    """Atomically update generated metadata only when its bounded bytes changed."""
+    if path.exists() and read_idea_bytes(path) == data:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix='.idea-', suffix='.xml', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'wb') as output:
+            output.write(data)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
 def idea(root, repos, dry_run, active_repos=None):
+    inputs = IdeaXmlInputs()
     directory = root / '.idea'
     target = directory / 'vcs.xml'
     if directory.is_symlink() or target.is_symlink():
         raise WorkspaceError('IDEA output must be a local regular file.')
     if target.exists():
         try:
-            parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True))
-            tree = ET.parse(target, parser=parser)
+            tree = parse_idea_xml(target, inputs)
         except (ET.ParseError, OSError):
             raise WorkspaceError('Existing vcs.xml is invalid; preserved it.') from None
         if tree.getroot().tag != 'project':
@@ -267,20 +579,16 @@ def idea(root, repos, dry_run, active_repos=None):
         if mapping not in existing:
             ET.SubElement(component, 'mapping', directory=mapping, vcs='Git')
             added.append(mapping)
-    if not dry_run and (added or removed or not target.exists()):
-        directory.mkdir(exist_ok=True)
-        ET.indent(tree, space='  ')
-        # Write beside destination and replace atomically, preserving malformed input on error.
-        fd, filename = tempfile.mkstemp(prefix='.vcs-', suffix='.xml', dir=directory)
-        try:
-            with os.fdopen(fd, 'wb') as output:
-                tree.write(output, encoding='UTF-8', xml_declaration=True)
-                output.write(b'\n')
-            os.replace(filename, target)
-        finally:
-            if os.path.exists(filename):
-                os.unlink(filename)
-    return dict(state='planned' if dry_run else 'configured', added=added, removed=removed)
+    # Validate all module metadata before writing vcs.xml or any module output.
+    web_outputs, web_modules = web_module_plan(root, repos, inputs)
+    outputs = [(path, idea_xml_bytes(document)) for path, document in web_outputs]
+    if added or removed or not target.exists():
+        outputs.append((target, idea_xml_bytes(tree)))
+    if not dry_run:
+        for path, data in outputs:
+            write_idea_xml(path, data)
+    return dict(state='planned' if dry_run else 'configured', added=added, removed=removed,
+                web_modules=web_modules)
 
 
 def main(argv=None):

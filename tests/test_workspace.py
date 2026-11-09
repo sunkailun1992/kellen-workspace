@@ -340,6 +340,380 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(set(values), {'$PROJECT_DIR$', '$PROJECT_DIR$/alpha', '$PROJECT_DIR$/beta', '$PROJECT_DIR$/custom'})
         self.assertIsNotNone(doc.find('.//component[@name="Other"]'))
 
+    def test_idea_registers_web_content_root_without_replacing_gradle_modules(self):
+        self.repos[1]['kind'] = 'web'
+        self.manifest()
+        self.clone()
+        physical = self.base / '前端 源码' / 'beta'
+        physical.parent.mkdir()
+        (self.root / 'beta').rename(physical)
+        (self.root / 'beta').symlink_to(physical, target_is_directory=True)
+        idea = self.root / '.idea'
+        idea.mkdir()
+        modules = idea / 'modules.xml'
+        modules.write_text('<project version="4"><component name="ProjectModuleManager"><modules>'
+                           '<module filepath="$PROJECT_DIR$/java.iml" group="Java" />'
+                           '</modules></component><component name="UserSetting" keep="yes" /></project>')
+        before = modules.read_bytes()
+        self.cli('idea', '--dry-run')
+        self.assertEqual(modules.read_bytes(), before)
+        output = idea / 'workspace-web/beta.iml'
+        self.assertFalse(output.exists())
+        self.cli('idea')
+        tree = ET.parse(output)
+        self.assertEqual(tree.getroot().get('type'), 'WEB_MODULE')
+        content = tree.find('.//content')
+        expected = 'file://' + str(physical.resolve())
+        self.assertEqual(content.get('url'), expected)
+        self.assertEqual({x.get('url') for x in content.findall('excludeFolder')},
+                         {expected + '/' + name for name in ('node_modules', 'dist', 'coverage')})
+        doc = ET.parse(modules)
+        self.assertIsNotNone(doc.find('.//module[@group="Java"]'))
+        self.assertIsNotNone(doc.find('.//component[@name="UserSetting"][@keep="yes"]'))
+        references = doc.findall('.//module')
+        self.assertEqual(len(references), 2)
+        snapshot = (modules.read_bytes(), output.read_bytes())
+        self.cli('idea')
+        self.assertEqual((modules.read_bytes(), output.read_bytes()), snapshot)
+        self.assertTrue((self.root / 'beta').is_symlink())
+
+    def test_idea_migrates_owned_project_macro_to_absolute_content_urls(self):
+        self.repos[1]['kind'] = 'web'
+        self.manifest()
+        self.clone()
+        self.cli('idea')
+        path = self.root / '.idea/workspace-web/beta.iml'
+        tree = ET.parse(path)
+        content = tree.find('.//content')
+        legacy = 'file://$PROJECT_DIR$/beta'
+        content.set('url', legacy)
+        content.set('custom', 'preserved')
+        for item in content.findall('excludeFolder'):
+            item.set('url', legacy + '/' + item.get('url').rsplit('/', 1)[1])
+        ET.SubElement(content, 'excludeFolder', url=legacy + '/.cache', custom='preserved')
+        ET.SubElement(content, 'sourceFolder', url=legacy + '/src', isTestSource='false')
+        unrelated = 'file://' + str(self.base / 'unrelated')
+        ET.SubElement(content, 'excludeFolder', url=unrelated)
+        ET.SubElement(tree.getroot(), 'component', name='UserSetting', keep='yes')
+        tree.write(path)
+        registry = self.root / '.idea/modules.xml'
+        before_registry = registry.read_bytes()
+        self.cli('idea')
+        doc = ET.parse(path)
+        content = doc.find('.//content')
+        expected = 'file://' + str((self.root / 'beta').resolve())
+        self.assertEqual(content.get('url'), expected)
+        self.assertTrue(Path(content.get('url').removeprefix('file://')).is_absolute())
+        self.assertEqual(content.get('custom'), 'preserved')
+        self.assertEqual({item.get('url') for item in content.findall('excludeFolder')},
+                         {expected + '/' + name for name in ('node_modules', 'dist', 'coverage', '.cache')} | {unrelated})
+        self.assertEqual(content.find('sourceFolder').get('url'), expected + '/src')
+        self.assertIsNotNone(doc.find('.//component[@name="UserSetting"][@keep="yes"]'))
+        self.assertEqual(registry.read_bytes(), before_registry)
+        snapshot = path.read_bytes()
+        self.cli('idea')
+        self.assertEqual(path.read_bytes(), snapshot)
+
+    def test_idea_invalid_module_registry_is_preserved_before_any_write(self):
+        self.repos[1]['kind'] = 'web'
+        self.manifest()
+        self.clone()
+        idea = self.root / '.idea'
+        idea.mkdir()
+        (idea / 'modules.xml').write_text('broken modules')
+        self.cli('idea', code=1)
+        self.assertEqual((idea / 'modules.xml').read_text(), 'broken modules')
+        self.assertFalse((idea / 'vcs.xml').exists())
+        self.assertFalse((idea / 'workspace-web').exists())
+
+    def test_idea_rejects_dtd_in_all_metadata_without_writing(self):
+        self.repos[1]['kind'] = 'web'
+        self.manifest()
+        self.clone()
+        self.cli('idea')
+        idea = self.root / '.idea'
+        registry = idea / 'modules.xml'
+        custom = self.root / 'beta/custom.iml'
+        custom.write_text('<module type="WEB_MODULE"><component name="Custom" /></module>')
+        tree = ET.parse(registry)
+        ET.SubElement(tree.find('.//modules'), 'module', filepath='$PROJECT_DIR$/beta/custom.iml')
+        tree.write(registry)
+        files = [idea / 'vcs.xml', registry, idea / 'workspace-web/beta.iml', custom]
+        original = {path: path.read_bytes() for path in files}
+        for target in files:
+            with self.subTest(target=target.name):
+                root = 'module' if target.suffix == '.iml' else 'project'
+                target.write_text('<!DOCTYPE ' + root + ' [<!ENTITY private "SYNTHETIC_XML_CANARY">]>'
+                                  '<' + root + ' value="&private;" />')
+                before = {path: path.read_bytes() for path in files}
+                result = self.cli('idea', code=1)
+                self.assertNotIn('SYNTHETIC_XML_CANARY', json.dumps(result))
+                self.assertEqual({path: path.read_bytes() for path in files}, before)
+                target.write_bytes(original[target])
+
+    def test_idea_rejects_external_dtd_and_utf16_entity_declarations(self):
+        self.clone()
+        idea = self.root / '.idea'
+        idea.mkdir()
+        path = idea / 'vcs.xml'
+        for payload in [b'<!DOCTYPE project SYSTEM "http://127.0.0.1:9/forbidden"><project />',
+                        '<!DOCTYPE project [<!ENTITY x "SYNTHETIC_XML_CANARY">]><project>&x;</project>'.encode('utf-16')]:
+            with self.subTest(payload=payload[:16]):
+                path.write_bytes(payload)
+                result = self.cli('idea', code=1)
+                self.assertNotIn('SYNTHETIC_XML_CANARY', json.dumps(result))
+                self.assertEqual(path.read_bytes(), payload)
+
+    def test_idea_rejects_xml_resource_exhaustion_before_writing(self):
+        self.clone()
+        idea = self.root / '.idea'
+        idea.mkdir()
+        path = idea / 'vcs.xml'
+        cases = {
+            'bytes': '<project><!--' + 'x' * (2 * 1024 * 1024) + '--></project>',
+            'depth': '<project>' + '<x>' * 128 + '</x>' * 128 + '</project>',
+            'nodes': '<project>' + '<x/>' * 50000 + '</project>',
+            'attributes': '<project ' + ' '.join('x%d="a"' % i for i in range(257)) + '/>',
+            'namespace-uri': '<project xmlns:p="urn:' + 'x' * 512 + '"/>',
+            'namespace-count': '<project ' + ' '.join('xmlns:p%d="urn:%d"' % (i, i) for i in range(129)) + '/>',
+            'name': '<project><' + 'x' * 1025 + '/></project>',
+            'expanded-names': '<project xmlns:p="urn:' + 'x' * 508 + '">' +
+                              ''.join('<p:e%d/>' % i for i in range(17000)) + '</project>',
+        }
+        for name, payload in cases.items():
+            with self.subTest(limit=name):
+                path.write_text(payload)
+                before = path.read_bytes()
+                self.cli('idea', code=1)
+                self.assertEqual(path.read_bytes(), before)
+
+    def test_idea_safe_xml_preserves_comments_namespaces_and_builtin_entities(self):
+        self.clone()
+        idea = self.root / '.idea'
+        idea.mkdir()
+        path = idea / 'vcs.xml'
+        path.write_text('<project version="4"><!--literal <!DOCTYPE is harmless here-->'
+                        '<component name="User" xmlns:p="urn:fixture" p:flag="a&amp;b">'
+                        '<p:value>&lt;data&gt;&#65;</p:value></component></project>')
+        self.cli('idea')
+        doc = ET.parse(path)
+        self.assertEqual(doc.find('.//component[@name="User"]').get('{urn:fixture}flag'), 'a&b')
+        self.assertEqual(doc.find('.//{urn:fixture}value').text, '<data>A')
+        self.assertIn('literal <!DOCTYPE', path.read_text())
+
+    def test_idea_unknown_xml_encoding_returns_sanitized_error_without_writing(self):
+        self.repos[1]['kind'] = 'web'
+        self.manifest()
+        self.clone()
+        idea = self.root / '.idea'
+        idea.mkdir()
+        path = idea / 'vcs.xml'
+        payload = b'<?xml version="1.0" encoding="SYNTHETIC_UNKNOWN_ENCODING"?><project />'
+        path.write_bytes(payload)
+        run = subprocess.run([sys.executable, str(self.root / 'scripts/workspace.py'), 'idea', '--json'],
+                             cwd=self.base, env=self.env, text=True, capture_output=True)
+        self.assertEqual(run.returncode, 1)
+        self.assertEqual(json.loads(run.stdout)['exit_code'], 1)
+        self.assertNotIn('SYNTHETIC_UNKNOWN_ENCODING', run.stdout + run.stderr)
+        self.assertEqual(run.stderr, '')
+        self.assertEqual(path.read_bytes(), payload)
+        self.assertFalse((idea / 'modules.xml').exists())
+        self.assertFalse((idea / 'workspace-web').exists())
+
+    def test_idea_rejects_oversized_formatted_output_before_any_file_write(self):
+        self.repos[1]['kind'] = 'web'
+        self.manifest()
+        self.clone()
+        idea = self.root / '.idea'
+        idea.mkdir()
+        vcs = idea / 'vcs.xml'
+        vcs.write_text('<project>' + '<x>' * 120 + '<z/>' * 10000 + '</x>' * 120 + '</project>')
+        before = vcs.read_bytes()
+        self.cli('idea', code=1)
+        self.assertEqual(vcs.read_bytes(), before)
+        self.assertFalse((idea / 'modules.xml').exists())
+        self.assertFalse((idea / 'workspace-web').exists())
+
+    def test_idea_rejects_generated_node_overflow_before_any_file_write(self):
+        self.repos[1]['kind'] = 'web'
+        self.manifest()
+        self.clone()
+        idea = self.root / '.idea'
+        idea.mkdir()
+        vcs = idea / 'vcs.xml'
+        vcs.write_text('<project>' + '<x/>' * 49999 + '</project>')
+        before = vcs.read_bytes()
+        self.cli('idea', code=1)
+        self.assertEqual(vcs.read_bytes(), before)
+        self.assertFalse((idea / 'modules.xml').exists())
+        self.assertFalse((idea / 'workspace-web').exists())
+
+    def test_idea_rejects_cumulative_module_input_bytes_before_writing(self):
+        self.repos[1]['kind'] = 'web'
+        self.manifest()
+        self.clone()
+        idea = self.root / '.idea'
+        idea.mkdir()
+        registry = idea / 'modules.xml'
+        entries = []
+        payload = '<module><!--' + 'x' * (2 * 1024 * 1024 - 128) + '--></module>'
+        for index in range(5):
+            name = 'custom%d.iml' % index
+            (idea / name).write_text(payload)
+            entries.append('<module filepath="$PROJECT_DIR$/.idea/' + name + '"/>')
+        registry.write_text('<project><component name="ProjectModuleManager"><modules>' +
+                            ''.join(entries) + '</modules></component></project>')
+        before = {path: path.read_bytes() for path in idea.iterdir()}
+        self.cli('idea', code=1)
+        self.assertEqual({path: path.read_bytes() for path in idea.iterdir()}, before)
+        self.assertFalse((idea / 'vcs.xml').exists())
+        self.assertFalse((idea / 'workspace-web').exists())
+
+    def test_idea_rejects_too_many_module_input_files_before_writing(self):
+        self.repos[1]['kind'] = 'web'
+        self.manifest()
+        self.clone()
+        idea = self.root / '.idea'
+        idea.mkdir()
+        registry = idea / 'modules.xml'
+        entries = []
+        for index in range(513):
+            name = 'custom%d.iml' % index
+            (idea / name).write_text('<module />')
+            entries.append('<module filepath="$PROJECT_DIR$/.idea/' + name + '"/>')
+        registry.write_text('<project><component name="ProjectModuleManager"><modules>' +
+                            ''.join(entries) + '</modules></component></project>')
+        before = {path: path.read_bytes() for path in idea.iterdir()}
+        self.cli('idea', code=1)
+        self.assertEqual({path: path.read_bytes() for path in idea.iterdir()}, before)
+        self.assertFalse((idea / 'vcs.xml').exists())
+        self.assertFalse((idea / 'workspace-web').exists())
+
+    def test_idea_counts_repeated_canonical_module_input_only_once(self):
+        self.repos[1]['kind'] = 'web'
+        self.manifest()
+        self.clone()
+        idea = self.root / '.idea'
+        idea.mkdir()
+        custom = idea / 'custom.iml'
+        custom.write_text('<module><!--' + 'x' * (512 * 1024) + '--></module>')
+        before = custom.read_bytes()
+        registry = idea / 'modules.xml'
+        entries = ['<module filepath="$PROJECT_DIR$/.idea/' + prefix + 'custom.iml"/>'
+                   for prefix in ('', './') for unused in range(260)]
+        registry.write_text('<project><component name="ProjectModuleManager"><modules>' +
+                            ''.join(entries) + '</modules></component></project>')
+        self.cli('idea')
+        self.assertEqual(custom.read_bytes(), before)
+        self.assertTrue((idea / 'workspace-web/beta.iml').is_file())
+        snapshot = registry.read_bytes()
+        self.cli('idea')
+        self.assertEqual(registry.read_bytes(), snapshot)
+
+    def test_idea_web_output_directory_symlink_is_rejected(self):
+        self.repos[1]['kind'] = 'web'
+        self.manifest()
+        self.clone()
+        idea = self.root / '.idea'
+        idea.mkdir()
+        outside = self.base / 'preserved private files'
+        outside.mkdir()
+        (idea / 'workspace-web').symlink_to(outside, target_is_directory=True)
+        self.cli('idea', code=1)
+        self.assertEqual(list(outside.iterdir()), [])
+        self.assertFalse((idea / 'vcs.xml').exists())
+
+    def test_idea_reuses_registered_custom_frontend_module(self):
+        self.repos[1]['kind'] = 'web'
+        self.manifest()
+        self.clone()
+        idea = self.root / '.idea'
+        idea.mkdir()
+        custom = idea / 'my-frontend.iml'
+        custom.write_text('<module type="WEB_MODULE" version="4"><component name="NewModuleRootManager">'
+                          '<content url="file://$PROJECT_DIR$/beta" /></component>'
+                          '<component name="UserSetting" keep="yes" /></module>')
+        (idea / 'modules.xml').write_text('<project version="4"><component name="ProjectModuleManager">'
+                                          '<modules><module filepath="$PROJECT_DIR$/.idea/my-frontend.iml" />'
+                                          '</modules></component></project>')
+        before = custom.read_bytes()
+        self.cli('idea')
+        self.assertEqual(custom.read_bytes(), before)
+        self.assertFalse((idea / 'workspace-web/beta.iml').exists())
+        self.assertEqual(len(ET.parse(idea / 'modules.xml').findall('.//module')), 1)
+
+    def test_idea_reuses_module_dir_content_root_without_modifying_custom_module(self):
+        self.repos[1]['kind'] = 'web'
+        self.manifest()
+        self.clone()
+        idea = self.root / '.idea'
+        idea.mkdir()
+        custom = self.root / 'beta/custom.iml'
+        custom.write_text('<module type="WEB_MODULE" version="4"><component name="NewModuleRootManager">'
+                          '<content url="file://$MODULE_DIR$" /></component>'
+                          '<component name="UserSetting" keep="yes" /></module>')
+        (idea / 'modules.xml').write_text('<project version="4"><component name="ProjectModuleManager">'
+                                          '<modules><module filepath="$PROJECT_DIR$/beta/custom.iml" />'
+                                          '</modules></component></project>')
+        before = custom.read_bytes()
+        self.cli('idea')
+        self.assertEqual(custom.read_bytes(), before)
+        self.assertFalse((idea / 'workspace-web/beta.iml').exists())
+        self.assertEqual(len(ET.parse(idea / 'modules.xml').findall('.//module')), 1)
+
+    def test_idea_custom_frontend_replaces_only_old_generated_registration(self):
+        self.repos[1]['kind'] = 'web'
+        self.manifest()
+        self.clone()
+        self.cli('idea')
+        idea = self.root / '.idea'
+        custom = self.root / 'beta/custom.iml'
+        custom.write_text('<module type="WEB_MODULE" version="4"><component name="NewModuleRootManager">'
+                          '<content url="file://$MODULE_DIR$" /></component></module>')
+        before = custom.read_bytes()
+        registry = ET.parse(idea / 'modules.xml')
+        ET.SubElement(registry.find('.//modules'), 'module', filepath='$PROJECT_DIR$/beta/custom.iml')
+        registry.write(idea / 'modules.xml')
+        self.cli('idea')
+        self.assertEqual(custom.read_bytes(), before)
+        entries = ET.parse(idea / 'modules.xml').findall('.//module')
+        self.assertEqual([x.get('filepath') for x in entries], ['$PROJECT_DIR$/beta/custom.iml'])
+
+    def test_idea_preserves_equivalent_content_macro_rewritten_by_ide(self):
+        self.repos[1]['kind'] = 'web'
+        self.manifest()
+        self.clone()
+        self.cli('idea')
+        path = self.root / '.idea/workspace-web/beta.iml'
+        tree = ET.parse(path)
+        base = 'file://$MODULE_DIR$/../../beta'
+        content = tree.find('.//content')
+        content.set('url', base)
+        for item in content.findall('excludeFolder'):
+            item.set('url', base + '/' + item.get('url').rsplit('/', 1)[1])
+        tree.write(path)
+        self.cli('idea')
+        content = ET.parse(path).find('.//content')
+        self.assertEqual(content.get('url'), base)
+        self.assertEqual(len(content.findall('excludeFolder')), 3)
+
+    def test_idea_web_module_custom_settings_and_duplicate_references_are_preserved(self):
+        self.repos[1]['kind'] = 'web'
+        self.manifest()
+        self.clone()
+        self.cli('idea')
+        idea = self.root / '.idea'
+        path = idea / 'workspace-web/beta.iml'
+        module = ET.parse(path)
+        ET.SubElement(module.getroot(), 'component', name='UserSetting', keep='yes')
+        module.write(path)
+        registry = ET.parse(idea / 'modules.xml')
+        ET.SubElement(registry.find('.//modules'), 'module', filepath=str(path))
+        registry.write(idea / 'modules.xml')
+        self.cli('idea')
+        self.assertIsNotNone(ET.parse(path).find('.//component[@name="UserSetting"][@keep="yes"]'))
+        self.assertEqual(len(ET.parse(idea / 'modules.xml').findall('.//module')), 1)
+
     def test_idea_maps_reused_repository_by_real_path(self):
         self.clone()
         target = self.base / '复用 源码' / 'alpha'
