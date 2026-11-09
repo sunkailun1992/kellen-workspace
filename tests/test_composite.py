@@ -16,24 +16,10 @@ SERVICES = [r for r in JAVA if r["kind"] == "java-service"]
 
 
 class RunConfigurationTests(unittest.TestCase):
-    def test_each_service_runs_its_included_build_from_workspace(self):
-        files = list((ROOT / ".run").glob("*.run.xml"))
-        self.assertEqual(len(files), len(SERVICES))
-        actual = {}
-        for path in files:
-            config = ET.parse(path).getroot().find("configuration")
-            self.assertEqual(config.attrib["type"], "GradleRunConfiguration")
-            settings = config.find("ExternalSystemSettings")
-            options = {e.attrib["name"]: e for e in settings.findall("option")}
-            self.assertEqual(options["externalProjectPath"].attrib["value"], "$PROJECT_DIR$")
-            self.assertEqual(options["externalSystemIdString"].attrib["value"], "GRADLE")
-            self.assertEqual(options["scriptParameters"].attrib["value"],
-                             '--init-script "$PROJECT_DIR$/scripts/observability.init.gradle"')
-            tasks = options["taskNames"].findall("./list/option")
-            self.assertEqual(len(tasks), 1)
-            actual[tasks[0].attrib["value"]] = path.name
-            self.assertIsNone(options.get("env"))
-        self.assertEqual(set(actual), {f':{r["name"]}:bootRun' for r in SERVICES})
+    def test_service_gradle_launchers_are_not_generated_for_native_idea_workflow(self):
+        for repo in SERVICES:
+            self.assertFalse((ROOT / '.run' / f"{repo['name']}.run.xml").exists())
+        self.assertNotIn('prepareObserved', (ROOT / 'build.gradle').read_text())
 
 
 @unittest.skipUnless(os.environ.get("WORKSPACE_GRADLE_TESTS") == "1", "set WORKSPACE_GRADLE_TESTS=1 for Gradle integration fixtures")
@@ -90,7 +76,8 @@ tasks.register('plainJava', JavaExec)
         for name in ("settings.gradle", "build.gradle", "gradle.properties", "repos.json", "gradlew", "gradlew.bat"):
             shutil.copy2(ROOT / name, self.root / name)
         shutil.copytree(ROOT / "gradle", self.root / "gradle")
-        shutil.copytree(ROOT / ".run", self.root / ".run")
+        if (ROOT / ".run").is_dir():
+            shutil.copytree(ROOT / ".run", self.root / ".run")
         (self.root / "scripts").mkdir()
         shutil.copy2(ROOT / "scripts/verify-composite.gradle", self.root / "scripts/verify-composite.gradle")
 

@@ -1,6 +1,8 @@
 """三种启动入口共用的校验、秘密文件和 IDEA 精确迁移边界。"""
 import hashlib
+import contextlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -11,6 +13,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import zipfile
+from urllib.parse import quote
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -157,7 +160,9 @@ class RuntimePreparationTests(unittest.TestCase):
         app = tree.getroot().find("./component/configuration[@name='gateway']")
         args = shlex.split(app.find("option[@name='VM_PARAMETERS']").get("value"))
         self.assertEqual(sum(a.startswith("-javaagent:") for a in args), 1)
-        self.assertTrue(app.find("./method/option[@name='Gradle.BeforeRunTask']") is not None)
+        self.assertIsNone(app.find("./method/option[@name='Gradle.BeforeRunTask']"))
+        self.assertEqual(app.find("./method/option[@name='ToolBeforeRunTask']").get("actionId"),
+                         "Tool_KellenWorkspaceObservability_Prepare gateway")
         path.write_bytes(after)
         self.assertEqual(idea.candidate(self.root, self.inputs)[2], after)
 
@@ -179,6 +184,29 @@ class RuntimePreparationTests(unittest.TestCase):
         with self.assertRaises(Exception):
             idea.candidate(self.root, self.inputs)
 
+    def test_native_idea_migration_removes_only_owned_gradle_hook_and_preserves_other_before_run(self):
+        path = self.create_idea_fixture()
+        tree = workspace.parse_idea_xml(path)
+        method = tree.getroot().find("./component/configuration[@name='gateway']/method")
+        import xml.etree.ElementTree as ET
+        ET.SubElement(method, "option", {"name": "Gradle.BeforeRunTask", "enabled": "true",
+                                        "tasks": "prepareObservedGateway", "externalProjectPath": "$PROJECT_DIR$"})
+        ET.SubElement(method, "option", {"name": "ToolBeforeRunTask", "enabled": "true", "actionId": "Tool_User_Keep"})
+        path.write_bytes(workspace.idea_xml_bytes(tree))
+        _, _, after, _ = idea.candidate(self.root, self.inputs)
+        parsed = workspace.parse_idea_xml_bytes(after)
+        method = parsed.getroot().find("./component/configuration[@name='gateway']/method")
+        self.assertIsNone(method.find("option[@name='Gradle.BeforeRunTask']"))
+        self.assertIsNotNone(method.find("option[@name='Make']"))
+        self.assertEqual({item.get("actionId") for item in method.findall("option[@name='ToolBeforeRunTask']")},
+                         {"Tool_User_Keep", "Tool_KellenWorkspaceObservability_Prepare gateway"})
+        path.write_text(path.read_text().replace("prepareObservedGateway", "userCustomTask"))
+        preserved = path.read_bytes()
+        with self.assertRaises(runtime.RuntimeValidationError) as result:
+            idea.candidate(self.root, self.inputs)
+        self.assertEqual(result.exception.reason_code, "IDE_PREFLIGHT_CONFLICT")
+        self.assertEqual(path.read_bytes(), preserved)
+
     def test_idea_preflight_rejects_later_vm_or_environment_overrides(self):
         path = self.create_idea_fixture()
         _, _, after, _ = idea.candidate(self.root, self.inputs)
@@ -195,6 +223,213 @@ class RuntimePreparationTests(unittest.TestCase):
             path.write_bytes(workspace.idea_xml_bytes(tree))
             with self.assertRaises(ValueError):
                 runtime.check_idea_runtime("gateway", receipt, self.root)
+
+    def test_idea_environment_scope_uses_project_names_and_retains_identity_protection(self):
+        self.dev.write_text(self.dev.read_text() + "GITHUB_CUSTOM_SOURCE_URL=SYNTHETIC_PROJECT_PRIVATE_VALUE\n")
+        receipt = runtime.prepare("rag", "1.2.3", **self.inputs, write=False)
+        self.assertIn("GITHUB_CUSTOM_SOURCE_URL", receipt["project_environment_names"])
+        self.assertNotIn("SYNTHETIC_PROJECT_PRIVATE_VALUE", json.dumps(receipt))
+        for name in ("GITHUB_PERSONAL_ACCESS_TOKEN", "GITHUB_ACTIONS", "GITHUB_WORKFLOW", "GITHUB_UNRELATED_FUTURE_METADATA"):
+            self.assertFalse(runtime.ide_controlled_env_name(name, receipt), name)
+        for name in ("GITHUB_CUSTOM_SOURCE_URL", "github.custom-source.url", "GITHUB_ACTUATOR_TOKEN",
+                     "github.actuator.token", "GITHUB_NACOS_DEV_PASSWORD", "github.nacos.dev.server-addr",
+                     "OTEL_EXPORTER_OTLP_ENDPOINT", "otel.exporter.otlp.headers", "MANAGEMENT_SERVER_PORT",
+                     "LOGGING_FILE_NAME", "security.actuator.token", "SPRING_APPLICATION_VERSION",
+                     "SPRING_CONFIG_IMPORT", "JAVA_TOOL_OPTIONS"):
+            self.assertTrue(runtime.ide_controlled_env_name(name, receipt), name)
+        # Jar/Gradle cleanup remains broad; IDE scope is deliberately narrower.
+        self.assertTrue(runtime.controlled_env_name("GITHUB_PERSONAL_ACCESS_TOKEN"))
+
+    def test_interactive_shell_metadata_replay_passes_but_project_and_empty_overrides_fail(self):
+        if not Path('/bin/zsh').is_file():
+            self.skipTest('interactive shell fixture requires zsh')
+        path = self.create_idea_fixture()
+        self.dev.write_text(self.dev.read_text() + "GITHUB_CUSTOM_SOURCE_URL=SYNTHETIC_PROJECT_PRIVATE_VALUE\n")
+        _, _, after, _ = idea.candidate(self.root, self.inputs)
+        path.write_bytes(after)
+        receipt = runtime.prepare("gateway", "1.2.3", **self.inputs, write=False)
+        shell = self.root / 'shell'
+        shell.mkdir()
+        (shell / '.zshrc').write_text('export GITHUB_PERSONAL_ACCESS_TOKEN=SYNTHETIC_TOOL_TOKEN\nexport GITHUB_ANOTHER_TOOL_METADATA=SYNTHETIC_TOOL_METADATA\n')
+        environment = dict(runtime.controlled_environment(os.environ), ZDOTDIR=str(shell))
+        result = subprocess.run(['/bin/zsh', '-ilc', '/usr/bin/env -0'], env=environment,
+                                capture_output=True, check=True)
+        captured = dict(item.split('=', 1) for item in result.stdout.decode().split('\0') if '=' in item)
+        self.assertIn('GITHUB_PERSONAL_ACCESS_TOKEN', captured)
+        self.assertEqual([key for key in captured if runtime.ide_controlled_env_name(key, receipt)], [])
+        with patch.dict(os.environ, captured, clear=True):
+            runtime.check_idea_runtime("gateway", receipt, self.root)
+            for key in ('GITHUB_CUSTOM_SOURCE_URL', 'GITHUB_ACTUATOR_TOKEN', 'OTEL_EXPORTER_OTLP_ENDPOINT'):
+                for value in ('', 'SYNTHETIC_OVERRIDE_VALUE'):
+                    with patch.dict(os.environ, {key: value}):
+                        with self.assertRaises(runtime.RuntimeValidationError) as failure:
+                            runtime.check_idea_runtime("gateway", receipt, self.root)
+                        self.assertEqual(failure.exception.reason_code, 'IDE_ENV_OVERRIDE')
+                        self.assertNotIn('SYNTHETIC_', str(failure.exception))
+
+    def test_generator_and_preflight_share_project_environment_scope_and_aliases(self):
+        path = self.create_idea_fixture()
+        self.dev.write_text(self.dev.read_text() + "GITHUB_CUSTOM_SOURCE_URL=SYNTHETIC_PROJECT_PRIVATE_VALUE\n")
+        tree = workspace.parse_idea_xml(path)
+        config = tree.getroot().find("./component/configuration[@name='gateway']")
+        import xml.etree.ElementTree as ET
+        envs = ET.SubElement(config, 'envs')
+        ET.SubElement(envs, 'env', name='GITHUB_PERSONAL_ACCESS_TOKEN', value='SYNTHETIC_TOOL_TOKEN')
+        path.write_bytes(workspace.idea_xml_bytes(tree))
+        _, _, after, _ = idea.candidate(self.root, self.inputs)
+        path.write_bytes(after)
+        receipt = runtime.prepare('gateway', '1.2.3', **self.inputs, write=False)
+        with patch.dict(os.environ, {}, clear=True):
+            runtime.check_idea_runtime('gateway', receipt, self.root)
+        tree = workspace.parse_idea_xml(path)
+        config = tree.getroot().find("./component/configuration[@name='gateway']")
+        ET.SubElement(config.find('envs'), 'env', name='github.custom-source.url', value='SYNTHETIC_PROJECT_OVERRIDE')
+        path.write_bytes(workspace.idea_xml_bytes(tree))
+        before = path.read_bytes()
+        with self.assertRaises(runtime.RuntimeValidationError) as failure:
+            idea.candidate(self.root, self.inputs)
+        self.assertEqual(failure.exception.reason_code, 'IDE_ENV_OVERRIDE')
+        self.assertEqual(path.read_bytes(), before)
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(runtime.RuntimeValidationError) as failure:
+                runtime.check_idea_runtime('gateway', receipt, self.root)
+        self.assertEqual(failure.exception.reason_code, 'IDE_ENV_OVERRIDE')
+
+    def test_idea_saved_macro_paths_validate_and_remain_idempotent_across_two_saves(self):
+        path = self.create_idea_fixture()
+        home = self.root / "测试 home"
+        home.mkdir(mode=0o700)
+        prior_agent, prior_privacy = self.agent, self.privacy
+        self.agent, self.privacy = home / "agent.jar", home / "privacy extension.jar"
+        prior_agent.rename(self.agent)
+        prior_privacy.rename(self.privacy)
+        self.env.write_text(self.env.read_text().replace(str(prior_agent), str(self.agent)).replace(str(prior_privacy), str(self.privacy)))
+        with patch.object(Path, "home", return_value=home), patch.dict(os.environ, {}, clear=True):
+            _, _, after, _ = idea.candidate(self.root, self.inputs)
+            path.write_bytes(after)
+            receipts = {service: runtime.prepare(service, "1.2.3", **self.inputs) for service in runtime.SERVICES}
+            for round_number in (1, 2):
+                tree = workspace.parse_idea_xml(path)
+                for config in tree.getroot().findall("./component/configuration"):
+                    service = config.get("name")
+                    if service not in runtime.SERVICES:
+                        continue
+                    # 实际 IDEA 形态：URI 中宏在 file:// 后，中文百分号与 ../ 同时存在。
+                    back = "../" if round_number == 1 else "../../" + quote(self.root.parent.name, safe="") + "/"
+                    app = f"file://$PROJECT_DIR$/{back}{quote(self.root.name, safe='')}/state/prepared/{service}/application.properties"
+                    arguments = ["-javaagent:$USER_HOME$/agent.jar",
+                                 "-Dotel.javaagent.extensions=$USER_HOME$/./privacy extension.jar",
+                                 f"-Dotel.javaagent.configuration-file=$PROJECT_DIR$/./state/prepared/{service}/../{service}/agent.properties",
+                                 "-Dspring.config.additional-location=" + app]
+                    config.find("option[@name='VM_PARAMETERS']").set("value", " ".join('"' + item + '"' for item in arguments))
+                saved = workspace.idea_xml_bytes(tree)
+                path.write_bytes(saved)
+                for service, receipt in receipts.items():
+                    runtime.check_idea_runtime(service, receipt, self.root)
+                self.assertEqual(idea.candidate(self.root, self.inputs)[2], saved)
+                self.assertNotIn(b"SYNTHETIC_", saved)
+
+    def test_idea_controlled_references_reject_unknown_macros_and_nonlocal_or_invalid_uris(self):
+        receipt = runtime.prepare("rag", "1.2.3", **self.inputs)
+        for argument, code in (
+            ("-javaagent:$UNKNOWN$/agent.jar", "IDE_PATH_MACRO_UNSUPPORTED"),
+            ("-javaagent:$PROJECT_DIR", "IDE_PATH_MACRO_UNSUPPORTED"),
+            ("-Dotel.javaagent.configuration-file=relative.properties", "IDE_PATH_INVALID"),
+            ("-Dspring.config.additional-location=https://example.invalid/app.properties", "IDE_FILE_URI_INVALID"),
+            ("-Dspring.config.additional-location=file://remote.invalid/app.properties", "IDE_FILE_URI_INVALID"),
+            ("-Dspring.config.additional-location=file:///tmp/app.properties?SYNTHETIC_SECRET", "IDE_FILE_URI_INVALID"),
+            ("-Dspring.config.additional-location=file:///tmp/app.properties#", "IDE_FILE_URI_INVALID"),
+            ("-Dspring.config.additional-location=file:///tmp/%ZZ", "IDE_FILE_URI_INVALID"),
+            ("-Dspring.config.additional-location=file:///tmp/%FF", "IDE_FILE_URI_INVALID"),
+            ("-Dspring.config.additional-location=file:///tmp/%00", "IDE_FILE_URI_INVALID"),
+            ("-Dspring.config.additional-location=file:///tmp/app.proper\tties", "IDE_FILE_URI_INVALID"),
+            ("-Dspring.config.additional-location=file:///tmp/app.proper%09ties", "IDE_FILE_URI_INVALID"),
+            ("-Dspring.config.additional-location=file:///tmp/app%1fties", "IDE_FILE_URI_INVALID"),
+            ("-Dspring.config.additional-location=file:///tmp/app%7Fties", "IDE_FILE_URI_INVALID"),
+            ("-Dspring.config.additional-location= file:///tmp/app.properties", "IDE_FILE_URI_INVALID"),
+            ("-Dspring.config.additional-location=file:///tmp/%24UNKNOWN%24", "IDE_PATH_MACRO_UNSUPPORTED"),
+            ("-Dotel.javaagent.configuration-file=$PROJECT_DIR$/other.properties", "IDE_REFERENCE_MISMATCH"),
+        ):
+            with self.subTest(code=code, kind=argument.split("=", 1)[0]):
+                with self.assertRaises(runtime.RuntimeValidationError) as result:
+                    runtime.idea_reference(argument, receipt, self.root)
+                self.assertEqual(result.exception.reason_code, code)
+                self.assertNotIn("SYNTHETIC_SECRET", str(result.exception))
+
+    def test_idea_file_identity_cannot_hide_agent_options_or_multiple_locations(self):
+        receipt = {"agent": "/tmp/controlled/agent.jar", "privacy": "/tmp/controlled/privacy.jar",
+                   "agent_config": "/tmp/controlled/agent.properties", "app_config": "/tmp/controlled/application.properties"}
+        for argument in (
+            "-javaagent:/tmp/ROGUE.jar=/../../tmp/controlled/agent.jar",
+            "-Dotel.javaagent.extensions=/tmp/ROGUE.jar,/../../tmp/controlled/privacy.jar",
+            "-Dspring.config.additional-location=file:///tmp/OTHER.properties,file:///x/../../../../tmp/controlled/application.properties",
+            "-Dspring.config.additional-location=file:///tmp/OTHER.properties;file:///x/../../../../tmp/controlled/application.properties",
+            "-Dspring.config.additional-location=file:///tmp/OTHER.properties%2Cfile:///x/../../../../tmp/controlled/application.properties",
+        ):
+            with self.assertRaises(runtime.RuntimeValidationError) as result:
+                runtime.idea_reference(argument, receipt, self.root)
+            self.assertEqual(result.exception.reason_code, "IDE_REFERENCE_SYNTAX_INVALID")
+
+    def test_idea_duplicate_agent_is_rejected_even_when_two_spellings_target_same_jar(self):
+        path = self.create_idea_fixture()
+        _, _, after, _ = idea.candidate(self.root, self.inputs)
+        path.write_bytes(after)
+        tree = workspace.parse_idea_xml(path)
+        option = tree.getroot().find("./component/configuration[@name='gateway']/option[@name='VM_PARAMETERS']")
+        option.set("value", option.get("value") + ' "-javaagent:$PROJECT_DIR$/agent.jar"')
+        path.write_bytes(workspace.idea_xml_bytes(tree))
+        before = path.read_bytes()
+        receipt = runtime.prepare("gateway", "1.2.3", **self.inputs)
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(runtime.RuntimeValidationError) as result:
+                runtime.check_idea_runtime("gateway", receipt, self.root)
+            self.assertEqual(result.exception.reason_code, "IDE_REFERENCE_DUPLICATE")
+        with self.assertRaises(runtime.RuntimeValidationError) as result:
+            idea.candidate(self.root, self.inputs)
+        self.assertEqual(result.exception.reason_code, "IDE_REFERENCE_DUPLICATE")
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_prepare_diagnostics_distinguish_idea_reference_and_binding_failures_without_values(self):
+        spec = importlib.util.spec_from_file_location("prepare_observed", ROOT / "scripts/prepare-observed.py")
+        command = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(command)
+        for error, code in ((runtime.RuntimeValidationError("IDE_REFERENCE_MISMATCH"), "IDE_REFERENCE_MISMATCH"),
+                            (runtime.RuntimeValidationError("LAUNCH_BINDING_MISSING"), "LAUNCH_BINDING_MISSING"),
+                            (ValueError("SYNTHETIC_SECRET"), "RUNTIME_PREFLIGHT_FAILED")):
+            output = io.StringIO()
+            with patch.object(sys, "argv", ["prepare-observed.py", "prepare", "rag", "--check-idea"]), \
+                    patch.object(command, "load_binding", side_effect=error), contextlib.redirect_stdout(output):
+                self.assertEqual(command.main(), 1)
+            result = json.loads(output.getvalue())
+            self.assertEqual(result["reason_code"], code)
+            self.assertNotIn("SYNTHETIC_SECRET", output.getvalue())
+            if code.startswith("IDE_"):
+                self.assertNotIn("binding", result["hint"])
+        with self.assertRaises(runtime.RuntimeValidationError) as missing:
+            runtime.load_binding(self.root / "no-binding")
+        self.assertEqual(missing.exception.reason_code, "LAUNCH_BINDING_MISSING")
+
+    def test_native_quiet_preflight_is_silent_on_success_and_reports_safe_failure_on_stderr(self):
+        spec = importlib.util.spec_from_file_location("quiet_prepare", ROOT / "scripts/prepare-observed.py")
+        command = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(command)
+        for failure in (None, runtime.RuntimeValidationError("IDE_REFERENCE_MISSING")):
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with patch.object(sys, "argv", ["prepare-observed.py", "prepare", "rag", "--check-idea", "--quiet"]), \
+                    patch.object(command, "load_binding", return_value=self.inputs), \
+                    patch.object(command, "checkout_version", return_value="1.2.3"), \
+                    patch.object(command, "prepare", return_value={"service": "rag", "private": "SYNTHETIC_SECRET"}), \
+                    patch.object(command, "check_idea_runtime", side_effect=failure), \
+                    contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                status = command.main()
+            self.assertEqual(stdout.getvalue(), "")
+            if failure is None:
+                self.assertEqual(status, 0)
+                self.assertEqual(stderr.getvalue(), "")
+            else:
+                self.assertEqual(status, 1)
+                self.assertEqual(json.loads(stderr.getvalue())["reason_code"], "IDE_REFERENCE_MISSING")
+                self.assertNotIn("SYNTHETIC_SECRET", stderr.getvalue())
 
     def test_git_trackable_private_output_is_rejected_before_writing(self):
         subprocess.run(["git", "init", "-q", str(self.root)], check=True)

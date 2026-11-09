@@ -438,7 +438,7 @@ class WorkspaceTests(unittest.TestCase):
         tree = ET.parse(registry)
         ET.SubElement(tree.find('.//modules'), 'module', filepath='$PROJECT_DIR$/beta/custom.iml')
         tree.write(registry)
-        files = [idea / 'vcs.xml', registry, idea / 'workspace-web/beta.iml', custom]
+        files = [idea / 'vcs.xml', registry, idea / 'workspace-web/beta.iml', custom, idea / 'gradle.xml']
         original = {path: path.read_bytes() for path in files}
         for target in files:
             with self.subTest(target=target.name):

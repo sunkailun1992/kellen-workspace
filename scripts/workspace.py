@@ -212,6 +212,7 @@ class IdeaXmlInputs:
 
     def __init__(self):
         self.documents = {}
+        self.raw = {}
         self.total_bytes = 0
 
     def parse(self, path):
@@ -229,6 +230,7 @@ class IdeaXmlInputs:
             # Count invalid files too when a custom .iml is safely skipped.
             self.documents[canonical] = None
             self.documents[canonical] = parse_idea_xml_bytes(data)
+            self.raw[canonical] = data
         document = self.documents[canonical]
         if document is None:
             raise ET.ParseError('Invalid IDEA XML.')
@@ -497,6 +499,57 @@ def write_idea_xml(path, data):
             os.unlink(temporary)
 
 
+def idea_build_plan(root, inputs):
+    """Keep native IDEA compilation for this linked root without changing test runners."""
+    path = root / '.idea' / 'gradle.xml'
+    if path.parent.is_symlink():
+        raise WorkspaceError('IDEA output must be a local directory.')
+    tree = idea_xml(path, 'project', inputs=inputs, version='4')
+    before = inputs.raw.get(path.resolve())
+    components = tree.getroot().findall("component[@name='GradleSettings']")
+    if len(components) > 1:
+        raise WorkspaceError('Ambiguous Gradle settings; preserved the original metadata.')
+    component = components[0] if components else ET.SubElement(tree.getroot(), 'component', name='GradleSettings')
+    options = component.findall("option[@name='linkedExternalProjectsSettings']")
+    if len(options) > 1:
+        raise WorkspaceError('Ambiguous linked Gradle projects; preserved the original metadata.')
+    linked = options[0] if options else ET.SubElement(component, 'option', name='linkedExternalProjectsSettings')
+    sets = linked.findall('set')
+    if len(sets) > 1 or (not sets and len(linked)):
+        raise WorkspaceError('Unknown linked Gradle project metadata; preserved it.')
+    projects = sets[0] if sets else ET.SubElement(linked, 'set')
+    matches = []
+    for settings in projects.findall('GradleProjectSettings'):
+        locations = settings.findall("option[@name='externalProjectPath']")
+        if len(locations) > 1:
+            raise WorkspaceError('Ambiguous Gradle project path; preserved the original metadata.')
+        location = locations[0] if locations else None
+        value = location.get('value', '') if location is not None else ''
+        expanded = value.replace('$PROJECT_DIR$', str(root.resolve()))
+        if '$' not in expanded and Path(expanded).is_absolute() and Path(expanded).resolve() == root.resolve():
+            matches.append(settings)
+    if len(matches) > 1:
+        raise WorkspaceError('Duplicate workspace Gradle links; preserved the original metadata.')
+    settings = matches[0] if matches else ET.SubElement(projects, 'GradleProjectSettings')
+    if not matches:
+        ET.SubElement(settings, 'option', name='externalProjectPath', value='$PROJECT_DIR$')
+    delegated = settings.findall("option[@name='delegatedBuild']")
+    if len(delegated) > 1:
+        raise WorkspaceError('Ambiguous delegated build setting; preserved the original metadata.')
+    option = delegated[0] if delegated else ET.SubElement(settings, 'option', name='delegatedBuild')
+    option.set('value', 'false')
+    return dict(path=path, before=before, after=idea_xml_bytes(tree))
+
+
+def assert_idea_build_plan_current(plan):
+    path = plan['path']
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        raise WorkspaceError('IDEA Gradle settings changed during planning; preserved the current file.')
+    current = read_idea_bytes(path) if path.exists() else None
+    if current != plan['before']:
+        raise WorkspaceError('IDEA Gradle settings changed during planning; preserved the current file.')
+
+
 def idea(root, repos, dry_run, active_repos=None):
     inputs = IdeaXmlInputs()
     directory = root / '.idea'
@@ -579,16 +632,21 @@ def idea(root, repos, dry_run, active_repos=None):
         if mapping not in existing:
             ET.SubElement(component, 'mapping', directory=mapping, vcs='Git')
             added.append(mapping)
+    # Plan the one workspace Gradle link; preserve testRunner and all other links.
+    build_plan = idea_build_plan(root, inputs)
     # Validate all module metadata before writing vcs.xml or any module output.
     web_outputs, web_modules = web_module_plan(root, repos, inputs)
     outputs = [(path, idea_xml_bytes(document)) for path, document in web_outputs]
     if added or removed or not target.exists():
         outputs.append((target, idea_xml_bytes(tree)))
     if not dry_run:
+        assert_idea_build_plan_current(build_plan)
+        write_idea_xml(build_plan['path'], build_plan['after'])
         for path, data in outputs:
             write_idea_xml(path, data)
     return dict(state='planned' if dry_run else 'configured', added=added, removed=removed,
-                web_modules=web_modules)
+                web_modules=web_modules, delegated_build=False,
+                gradle_settings_changed=build_plan['before'] != build_plan['after'])
 
 
 def main(argv=None):

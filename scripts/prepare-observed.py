@@ -3,8 +3,10 @@
 import argparse
 import json
 from pathlib import Path
+import sys
 
-from observability_runtime import ROOT, check_idea_runtime, checkout_version, configure_binding, load_binding, prepare
+from observability_runtime import (ROOT, check_idea_runtime, checkout_version, configure_binding,
+                                   failure_hint, failure_reason, load_binding, prepare)
 
 
 def main():
@@ -16,6 +18,7 @@ def main():
     parser.add_argument("--state-dir", type=Path)
     parser.add_argument("--version")
     parser.add_argument("--check-idea", action="store_true")
+    parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
     try:
         if args.action == "configure":
@@ -33,11 +36,13 @@ def main():
             result = prepare(args.service, args.version or checkout_version(args.service), **inputs)
             if args.check_idea:
                 check_idea_runtime(args.service, result)
-        print(json.dumps(result, ensure_ascii=False))
+        if not args.quiet:
+            print(json.dumps(result, ensure_ascii=False))
         return 0
     except Exception as error:
+        reason = failure_reason(error)
         print(json.dumps({"status": "failed", "error_class": type(error).__name__,
-                          "hint": "configure the restricted private launch binding; values omitted"}))
+                          "reason_code": reason, "hint": failure_hint(reason)}), file=sys.stderr if args.quiet else sys.stdout)
         return 1
 
 

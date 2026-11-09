@@ -21,10 +21,11 @@
 - `status`只读本地Git状态，不隐式fetch；明确ahead/behind基于当前tracking refs。输出每仓branch、短SHA及dirty/ahead/behind等状态，不输出文件内容或凭据。
 - 退出码：0全部成功/正常状态；1输入或操作错误；2更新因保护条件跳过至少一仓。逐仓失败有汇总，不将一次失败误报为整套成功。
 - `idea`生成本机忽略的`.idea/vcs.xml`，只添加工作区和12个子Git映射，移除历史小程序的精确Git映射（工作区路径和symlink真实目标），保留其他用户映射。有效JSON输出必须只有一个JSON对象，日志不得混入stdout。
-- `.run/*.run.xml`保存9个共享Gradle `bootRun`入口，引用工作区根构建的`:服务名:bootRun`；服务工作目录必须是各自项目目录。Web前端保持自己的工具链，不纳入Java构建；移动端不在本工作区范围内。
+- 运行入口按用户2026-11-09的新决定更新：IDEA日常使用9个原生Spring Boot/Application配置，主类绿叶Run/Debug；原先9个共享Gradle `bootRun`启动文件已移除。原生Before Run使用IDE内置External Tool调用Python受控校验，不执行Gradle、不装插件。工具仅迁移已核个人主类/模块/origin，未知用户配置保留，实际值只存本机受限私有文件；IDE内存刷新与真实点击运行需分别验收。Web前端保持自己的工具链，不纳入Java构建；移动端不在本工作区范围内。
 - Gradle wrapper固定8.14.3，与现有11个Java项目一致。根`settings.gradle`从清单includeBuild所有Java项目；缺失时明确报初始化提示，不静默漏导入。
 - composite只在总工作区生效，显式替换`com:utils`和`com:rpc-api`为本地源码；公司`com.kellen:utils/rpc-api`不替换。单仓CI、版本、远端私库发布方式均不修改。
 - 根Gradle应用内建idea插件，将历史ai-wechat-mini-programs目录及其真实目标排除出根模块内容；保留原目录/symlink和Git ignore，不删除或修改独立小程序仓库。
+- `idea.sh`为唯一当前工作区Gradle链接显式写入`delegatedBuild=false`，原生Spring Boot入口由IDEA编译运行；只更新此字段，保留`testRunner`、其它链接和未知字段，使用原始XML快照进行写前CAS。全局IDE设置与标准wrapper不改。
 - 根Gradle提供`verifyWorkspace`及`compileAllJava`；不默认运行全部业务测试、启动服务或发布远端制品。
 
 ## 验证与边界

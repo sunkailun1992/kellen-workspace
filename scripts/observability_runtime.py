@@ -10,7 +10,7 @@ import re
 import shlex
 import subprocess
 import tempfile
-from urllib.parse import urlsplit
+from urllib.parse import unquote_to_bytes, urlsplit
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,6 +27,95 @@ CONTROLLED_ENV_PREFIXES = ("OTEL_", "MANAGEMENT_SERVER_", "LOGGING_", "GITHUB_")
 CONTROLLED_ENV_NAMES = {"JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS", "APP_ENV",
                         "SECURITY_ACTUATOR_TOKEN", "SPRING_APPLICATION_VERSION", "SPRING_APPLICATION_JSON",
                         "SPRING_CONFIG_ADDITIONAL_LOCATION", "SPRING_PROFILES_ACTIVE"}
+IDE_IDENTITY_ENV_NAMES = frozenset({"GITHUB_ACTUATOR_TOKEN", "GITHUB_NACOS_DEV_SERVER_ADDR",
+                                   "GITHUB_NACOS_DEV_USERNAME", "GITHUB_NACOS_DEV_PASSWORD",
+                                   "GITHUB_NACOS_DEV_NAMESPACE", "GITHUB_NACOS_DEV_GROUP",
+                                   "GITHUB_NACOS_DEV_ACCESS_TOKEN"})
+REASON_CODES = frozenset({"LAUNCH_BINDING_MISSING", "LAUNCH_BINDING_INVALID", "RUNTIME_PREFLIGHT_FAILED",
+                          "IDE_PATH_MACRO_UNSUPPORTED", "IDE_PATH_INVALID", "IDE_FILE_URI_INVALID",
+                          "IDE_REFERENCE_MISSING", "IDE_REFERENCE_MISMATCH", "IDE_REFERENCE_DUPLICATE",
+                          "IDE_REFERENCE_SYNTAX_INVALID", "IDE_MODULE_MISMATCH",
+                          "IDE_VM_ARGUMENTS_INVALID", "IDE_VM_OVERRIDE", "IDE_ENV_OVERRIDE",
+                          "IDE_APPLICATION_ARGS_OVERRIDE", "IDE_APPLICATION_MISSING", "IDE_CONFIGURATION_INVALID",
+                          "IDE_REPOSITORY_MISMATCH", "IDE_METADATA_CHANGED", "IDE_PREFLIGHT_CONFLICT"})
+
+
+class RuntimeValidationError(ValueError):
+    """Only a fixed diagnostic code may escape validation; never include user values."""
+    def __init__(self, reason_code):
+        self.reason_code = reason_code if reason_code in REASON_CODES else "RUNTIME_PREFLIGHT_FAILED"
+        super().__init__(self.reason_code)
+
+
+def failure_reason(error):
+    return error.reason_code if isinstance(error, RuntimeValidationError) else "RUNTIME_PREFLIGHT_FAILED"
+
+
+def failure_hint(reason):
+    if reason.startswith("LAUNCH_BINDING_"):
+        return "check the restricted private launch binding; values omitted"
+    if reason.startswith("IDE_"):
+        return "check the IDEA Application references, parameters and environment; values omitted"
+    return "check private runtime inputs, artifacts and output permissions; values omitted"
+
+
+def canonical_idea_path(value, root=ROOT, file_uri=False, forbidden=""):
+    """Resolve only supported IDEA macros and a local file reference, then compare targets."""
+    macros = {"$PROJECT_DIR$": str(root.resolve()), "$USER_HOME$": str(Path.home().resolve())}
+    for macro, target in macros.items():
+        value = value.replace(macro, target)
+    if "$" in value:
+        raise RuntimeValidationError("IDE_PATH_MACRO_UNSUPPORTED")
+    if any(char in value for char in forbidden):
+        raise RuntimeValidationError("IDE_REFERENCE_SYNTAX_INVALID")
+    if any(ord(char) < 0x20 or ord(char) == 0x7f for char in value):
+        raise RuntimeValidationError("IDE_FILE_URI_INVALID" if file_uri else "IDE_PATH_INVALID")
+    try:
+        if file_uri:
+            parsed = urlsplit(value)
+            if value[:5].lower() != "file:" or parsed.scheme != "file" or parsed.netloc or "?" in value or "#" in value:
+                raise RuntimeValidationError("IDE_FILE_URI_INVALID")
+            if re.search(r"%(?![0-9A-Fa-f]{2})", parsed.path):
+                raise RuntimeValidationError("IDE_FILE_URI_INVALID")
+            value = unquote_to_bytes(parsed.path).decode("utf-8", errors="strict")
+            if "$" in value:
+                raise RuntimeValidationError("IDE_PATH_MACRO_UNSUPPORTED")
+            if any(char in value for char in forbidden):
+                raise RuntimeValidationError("IDE_REFERENCE_SYNTAX_INVALID")
+            if any(ord(char) < 0x20 or ord(char) == 0x7f for char in value):
+                raise RuntimeValidationError("IDE_FILE_URI_INVALID")
+        path = Path(value)
+        if not path.is_absolute():
+            raise RuntimeValidationError("IDE_PATH_INVALID")
+        return path.resolve()
+    except RuntimeValidationError:
+        raise
+    except (ValueError, OSError, UnicodeError):
+        raise RuntimeValidationError("IDE_FILE_URI_INVALID" if file_uri else "IDE_PATH_INVALID") from None
+
+
+def idea_reference(argument, receipt, root=ROOT):
+    """Return a controlled reference key, or None for an unrelated VM argument."""
+    # 这些值是各自启动协议中的单文件引用。先拒绝 options/list/group 语法，
+    # 不能让 resolve('rogue.jar=/../controlled.jar') 折掉实际会执行的前缀。
+    references = (("-javaagent:", "agent", False, "="),
+                  ("-Dotel.javaagent.extensions=", "privacy", False, ",;"),
+                  ("-Dotel.javaagent.configuration-file=", "agent_config", False, ""),
+                  ("-Dspring.config.additional-location=", "app_config", True, ",;"))
+    for prefix, key, file_uri, forbidden in references:
+        if argument.startswith(prefix):
+            actual = canonical_idea_path(argument[len(prefix):], root, file_uri, forbidden)
+            if actual != Path(receipt[key]).resolve():
+                raise RuntimeValidationError("IDE_REFERENCE_MISMATCH")
+            return key
+    return None
+
+
+def idea_vm_arguments(value):
+    try:
+        return shlex.split(value)
+    except ValueError:
+        raise RuntimeValidationError("IDE_VM_ARGUMENTS_INVALID") from None
 
 
 def controlled_environment(environment):
@@ -43,6 +132,23 @@ def managed_property(name):
 
 def controlled_env_name(name):
     return managed_property(name) or name in {"JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS"}
+
+
+def ide_controlled_env_name(name, receipt):
+    """IDE inherits shell tooling too; only actual project GitHub keys are overrides."""
+    normalized = re.sub(r"[^a-z0-9]", "", name.lower())
+    if normalized.startswith("github"):
+        project_names = receipt.get("project_environment_names", ())
+        protected = {re.sub(r"[^a-z0-9]", "", key.lower())
+                     for key in (*IDE_IDENTITY_ENV_NAMES, *project_names) if isinstance(key, str)}
+        return normalized in protected
+    return controlled_env_name(name)
+
+
+def validate_idea_application_args(arguments, receipt):
+    if any(argument.startswith("--") and ide_controlled_env_name(argument[2:].split("=", 1)[0], receipt)
+           for argument in arguments):
+        raise RuntimeValidationError("IDE_APPLICATION_ARGS_OVERRIDE")
 
 
 def private_output(path):
@@ -181,10 +287,16 @@ def binding_path(root=ROOT):
 
 
 def load_binding(root=ROOT):
-    result = json.loads(private_file(binding_path(root)).read_text())
-    if set(result) != {"runtime_env", "dev_env", "state_dir"}:
-        raise ValueError("local launch binding invalid")
-    return {key: Path(value) for key, value in result.items()}
+    path = binding_path(root)
+    if not path.exists():
+        raise RuntimeValidationError("LAUNCH_BINDING_MISSING")
+    try:
+        result = json.loads(private_file(path).read_text())
+        if set(result) != {"runtime_env", "dev_env", "state_dir"}:
+            raise ValueError("local launch binding invalid")
+        return {key: Path(value) for key, value in result.items()}
+    except (ValueError, TypeError, OSError):
+        raise RuntimeValidationError("LAUNCH_BINDING_INVALID") from None
 
 
 def configure_binding(runtime_env, dev_env, state_dir, root=ROOT):
@@ -237,9 +349,10 @@ def prepare(service, version, runtime_env, dev_env, state_dir, write=True):
     if write:
         write_private(agent_config, properties(telemetry))
         write_private(app_config, properties(app))
-    # 回执只有文件路径、版本和固定开关；令牌、地址等值不进入命令行或 stdout。
+    # 回执只有文件路径、版本、固定开关和项目配置键名；令牌、地址等值不回显。
     return {"service": service, "version": version, "agent": str(agent), "privacy": str(privacy),
             "agent_config": str(agent_config), "app_config": str(app_config),
+            "project_environment_names": sorted(key for key in environment if key.startswith("GITHUB_")),
             "jvm_arguments": [f"-javaagent:{agent}", f"-Dotel.javaagent.extensions={privacy}",
                               f"-Dotel.javaagent.configuration-file={agent_config}",
                               f"-Dspring.config.additional-location={app_config.as_uri()}"]}
@@ -248,11 +361,13 @@ def prepare(service, version, runtime_env, dev_env, state_dir, write=True):
 def check_idea_runtime(service, receipt, root=ROOT):
     """IDE 每次运行前拒绝用户 VM/env 中会覆盖受控配置的值，不输出其内容。"""
     import workspace
-    if any(value for key, value in os.environ.items() if controlled_env_name(key)):
-        raise ValueError("inherited IDE environment overrides private runtime configuration")
-    tree = workspace.parse_idea_xml(root / ".idea/workspace.xml")
+    if any(ide_controlled_env_name(key, receipt) for key in os.environ):
+        raise RuntimeValidationError("IDE_ENV_OVERRIDE")
+    try:
+        tree = workspace.parse_idea_xml(root / ".idea/workspace.xml")
+    except Exception:
+        raise RuntimeValidationError("IDE_CONFIGURATION_INVALID") from None
     matched = False
-    expected = set(receipt["jvm_arguments"])
     for config in tree.getroot().findall("./component[@name='RunManager']/configuration"):
         if config.get("type") not in {"SpringBootApplicationConfigurationType", "Application"}:
             continue
@@ -262,20 +377,28 @@ def check_idea_runtime(service, receipt, root=ROOT):
             continue
         module = config.find("module")
         if module is None or module.get("name") not in {service, f"{service}.main"}:
-            raise ValueError("IDE module outside personal service scope")
-        arguments = shlex.split(options.get("VM_PARAMETERS", ""))
-        if not expected.issubset(arguments):
-            raise ValueError("IDE runtime references missing; configure the Application entry")
+            raise RuntimeValidationError("IDE_MODULE_MISMATCH")
+        arguments = idea_vm_arguments(options.get("VM_PARAMETERS", ""))
+        references = set()
         for argument in arguments:
-            if argument in expected:
+            reference = idea_reference(argument, receipt, root)
+            if reference is not None:
+                if reference in references:
+                    raise RuntimeValidationError("IDE_REFERENCE_DUPLICATE")
+                references.add(reference)
                 continue
-            if argument.startswith("-javaagent:") or (argument.startswith("-D") and managed_property(argument[2:].split("=", 1)[0])):
-                raise ValueError("IDE VM parameter overrides private runtime configuration")
-        validate_application_args(shlex.split(options.get("PROGRAM_PARAMETERS", "")))
+            if argument.startswith("-javaagent:") or (argument.startswith("-D") and ide_controlled_env_name(argument[2:].split("=", 1)[0], receipt)):
+                raise RuntimeValidationError("IDE_VM_OVERRIDE")
+        if references != {"agent", "privacy", "agent_config", "app_config"}:
+            raise RuntimeValidationError("IDE_REFERENCE_MISSING")
+        try:
+            validate_idea_application_args(idea_vm_arguments(options.get("PROGRAM_PARAMETERS", "")), receipt)
+        except ValueError:
+            raise RuntimeValidationError("IDE_APPLICATION_ARGS_OVERRIDE") from None
         for item in config.findall("./envs/env"):
             key = item.get("name", "")
-            if controlled_env_name(key):
-                raise ValueError("IDE environment overrides private runtime configuration")
+            if ide_controlled_env_name(key, receipt):
+                raise RuntimeValidationError("IDE_ENV_OVERRIDE")
         matched = True
     if not matched:
-        raise ValueError("personal IDE Application entry missing")
+        raise RuntimeValidationError("IDE_APPLICATION_MISSING")

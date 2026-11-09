@@ -1,8 +1,8 @@
 # kellen-workspace
 
-12个个人开源项目的统一开发入口。各项目保留独立Git仓库，在IDEA中通过根Gradle composite统一导入11个Java项目；Web前端admin-web使用自己的工具链。
+12个个人开源项目的统一开发入口。各项目保留独立Git仓库，在IDEA中统一导入11个Java项目；Web前端admin-web使用自己的工具链。
 
-本仓库只保存清单、辅助脚本、共享IDE运行入口和文档。项目清单以[`repos.json`](repos.json)为准，不包含子项目源码、Git历史或公司项目。
+本仓库只保存清单、辅助脚本、IDE配置工具和文档。项目清单以[`repos.json`](repos.json)为准，不包含子项目源码、Git历史或公司项目。
 
 | 类型 | 项目 |
 | --- | --- |
@@ -10,9 +10,9 @@
 | Java服务（9） | `gateway`、`user`、`ai-agent`、`ai`、`ai-memory`、`rag`、`mcp`、`message`、`report` |
 | Web前端（1） | `admin-web` |
 
-## IDEA、Gradle与服务器Jar观测启动
+## IDEA原生Spring Boot与服务器Jar观测启动
 
-三种启动入口共用 `scripts/observability_runtime.py` 的完整 preflight：固定官方 OTel Java agent `2.33.1` 的 SHA-256/版本，以及本地构建隐私扩展 `0.1.0` 的 SHA-256/兼容版本；任一缺失、摘要或版本不符均在服务 JVM 启动前拒绝。仅给选定服务挂 agent，不使用全局 `JAVA_TOOL_OPTIONS`，不影响 Gradle daemon、编译器和测试 JVM。
+IDE原生开发与服务器Jar入口共用 `scripts/observability_runtime.py` 的完整 preflight：固定官方 OTel Java agent `2.33.1` 的 SHA-256/版本，以及本地构建隐私扩展 `0.1.0` 的 SHA-256/兼容版本；任一缺失、摘要或版本不符均在服务 JVM 启动前拒绝。仅给选定服务挂 agent，不使用全局 `JAVA_TOOL_OPTIONS`，不影响编译器和测试 JVM。
 
 先按 `utils/ops/github-dev/observability/agent-extension/README.md` 准备两个 Git 外制品。私有 runtime env 提供 `OTEL_JAVAAGENT_PATH`、`OTEL_JAVAAGENT_SHA256`、`FLEET_PRIVACY_EXTENSION_PATH`、`FLEET_PRIVACY_EXTENSION_SHA256`、`OTEL_EXPORTER_OTLP_ENDPOINT` 和需要的 `OTEL_EXPORTER_OTLP_HEADERS`；私有 dev env 提供既有 `GITHUB_*` 配置及 `GITHUB_ACTUATOR_TOKEN`。两文件必须由当前用户持有、0600、非 symlink，内容按简单 env 格式解析，不执行 shell。
 
@@ -25,38 +25,38 @@ python3 scripts/prepare-observed.py configure \
   --runtime-env /secure/observability.env --dev-env /secure/github-dev.env
 ```
 
-该命令只在被忽略的 `build/observability-runtime/launch.json` 保存原私有文件的路径引用。每次启动再读原文件、重验制品，生成 0700 目录中的 0600 `agent.properties` 与 `application.properties`。OTLP header、运维令牌和配置地址等实际值只在这些受限文件，不进入源码、IDE XML、命令行或回执。自定义 `--state-dir` 必须位于 Git 工作树外或被明确 ignore；可跟踪路径会在写入前拒绝。新 clone 未配置私有绑定仍可编译/测试；使用观测入口 `bootRun` 会明确拒绝，不会静默退成无观测启动。
+该命令只在被忽略的 `build/observability-runtime/launch.json` 保存原私有文件的路径引用。每次启动再读原文件、重验制品，生成 0700 目录中的 0600 `agent.properties` 与 `application.properties`。OTLP header、运维令牌和配置地址等实际值只在这些受限文件，不进入源码、IDE XML、命令行或回执。自定义 `--state-dir` 必须位于 Git 工作树外或被明确 ignore；可跟踪路径会在写入前拒绝。新 clone 未配置私有绑定仍可编译/测试；迁移后的原生运行入口缺少绑定时会在 JVM 启动前明确拒绝。
 
-### IDEA原生Application与共享Gradle入口
+### IDEA原生Spring Boot/Application入口
 
 已有 `GatewayApplication`、`AiAgentApplication` 等原生 Spring Boot/Application 配置可受限迁移：
 
 ```bash
 python3 scripts/configure-idea-observed.py \
-  --runtime-env /secure/observability.env --dev-env /secure/github-dev.env --dry-run
+  --runtime-env /secure/observability.env --dev-env /secure/github-dev.env \
+  --idea-config-dir "/path/to/IDE-config" --dry-run
 python3 scripts/configure-idea-observed.py \
   --runtime-env /secure/observability.env --dev-env /secure/github-dev.env \
-  --expected-sha256 <本次dry-run的source_sha256>
+  --idea-config-dir "/path/to/IDE-config" \
+  --expected-sha256 <本次dry-run的source_sha256> \
+  --expected-tools-sha256 <已存在工具文件的tools_source_sha256>
 ```
 
-工具仅匹配清单中的9个主类、对应模块和已核个人 GitHub origin；其它配置保留，冲突 VM/业务参数或环境变量会拒绝迁移并保留原文件。全部候选通过后，按原 XML SHA 做 CAS、留受限备份，再更新本机忽略的 `.idea/workspace.xml`。IDE XML 只引用 agent 与两个配置文件的路径，并添加每次 Run/Debug 前的 `prepareObserved*` Gradle 任务；该任务重新校验制品、刷新配置、拒绝后加的观测覆盖参数。普通 `-Xmx` 和 JDWP 调试参数保留。
+工具仅匹配清单中的9个主类、对应模块和已核个人 GitHub origin；其它配置保留，冲突 VM/业务参数或环境变量会拒绝迁移并保留原文件。全部候选通过后，按原 XML SHA 做 CAS、留受限备份，再更新本机忽略的 `.idea/workspace.xml`。IDE XML 只引用 agent 与两个配置文件的路径，并添加 IDE 内置 `ToolBeforeRunTask`：用户照常点主类绿叶 Run/Debug，原生 JVM 启动前由 External Tool 直接执行 Python preflight，不装额外插件。成功检查保持静默，失败只把固定 reason/hint 写 stderr 并以非零退出，阻止启动。普通 `-Xmx` 和 JDWP 调试参数保留。
 
-IDEA 已打开时，需要 Reload All from Disk 并核对运行配置的 VM options、Before launch 中的 Gradle preflight；若 IDE 内存仍保留旧配置，先保存并关闭对应工作区，再重新 dry-run/CAS 迁移后打开。脚本写入成功不表示 IDEA 内存刷新或真实 Run 已验收。后来新建的原生 Application 配置需要重新执行迁移，不能从“主类相同”推定已挂 agent。
+工具在指定 IDE 配置目录的 `tools/` 下维护独立个人工具组；只接管持久 owner/root 标记一致的九个工具，不覆盖用户其它工具。新建文件时省略 `--expected-tools-sha256`；已有文件则使用本次 dry-run 的原 SHA。工作区 XML 和工具文件候选都通过 CAS 后才应用，并保存受限备份。
 
-`.run/`中现有9个共享 Gradle 入口已显式带 `--init-script scripts/observability.init.gradle`，名称和 `:服务:bootRun` 任务保持。命令行可用：
+IDEA 已打开时，需要刷新并核对原生运行配置的 VM options、Before launch 中的 External Tool；若 IDE 内存仍保留旧配置，先保存并关闭对应工作区，再重新 dry-run/CAS 迁移后打开。脚本写入成功不表示 IDEA 内存刷新或真实 Run 已验收。后来新建的原生 Application 配置需要重新执行迁移，不能从“主类相同”推定已挂 agent。
 
-```bash
-python3 scripts/run-observed.py rag --dry-run
-python3 scripts/run-observed.py rag
-# 等价的显式 Gradle 入口：
-./gradlew --init-script scripts/observability.init.gradle :rag:bootRun
-```
+原来的九个共享服务启动文件及旧运行前任务已移除；迁移时保留 Make 和其它用户检查。日常直接选择 Spring Boot 主类绿叶 Run/Debug。新 clone 由 IDEA 识别各主类，创建原生运行配置后进行上述受限迁移，不生成第二套共享启动器。
 
-标准 `gradlew` 未修改；裸 `./gradlew :rag:bootRun` 不会自动加载观测 init，不能把它当作已经接入。共享入口的 preflight 在真正执行 `bootRun` 时运行，模型导入/编译不会读秘密或启动服务。已有 `task.jvmArgs`、`--args` 与继承环境中会覆盖 OTLP、日志、管理端口、版本或附加配置的内容按同一合同拒绝/清理，避免旧参数让接入失效。
+IDEA 保存 XML 时可能把绝对路径改写为 `$PROJECT_DIR$`、`$USER_HOME$` 或带 UTF-8 百分号和 `..` 的本地 `file:` URI。校验会规范化这些受支持的等价拼写，再逐项比较同一受控文件；迁移器保留等价宏形式，不反复改写。未知宏、非本地 URI、query/fragment、不同目标与重复 agent 引用仍会拒绝。失败回执使用固定 `reason_code` 区分 `IDE_REFERENCE_*`、`IDE_*_OVERRIDE` 和 `LAUNCH_BINDING_*`，不回显参数、路径内容或秘密。
+
+IDEA 可能继承交互 shell 的工具环境。检查仅把私有项目配置实际提供的 `GITHUB_*` 键及明确的 Nacos/Actuator 身份键视为覆盖；无关工具 metadata 不因前缀相同而被拒绝。项目键名仅作为安全元数据随 preflight 回执供校验使用，不包含值。实际受控键即使为空也会拒绝；OTel、管理端口、日志与关键 Spring 参数的保护保持。
 
 ### 服务器Jar入口
 
-服务器可部署 `scripts/run-observed-jar.py`、`scripts/observability_runtime.py` 与业务 Boot Jar，无需 Gradle。配置仍由服务器自己的受限私有 env 提供：
+服务器部署 `scripts/run-observed-jar.py`、`scripts/observability_runtime.py` 与业务 Boot Jar。配置仍由服务器自己的受限私有 env 提供：
 
 ```bash
 python3 scripts/run-observed-jar.py rag /deploy/rag.jar \
@@ -67,9 +67,9 @@ python3 scripts/run-observed-jar.py rag /deploy/rag.jar \
 
 Jar 的 `Start-Class` 必须匹配声明服务，`Implementation-Version` 必须存在；日志与 trace 使用同一版本。dry-run 做完整输入检查、不写文件、不启动 JVM。业务参数可放在 `--` 后，但覆盖受控日志、管理入口、版本、Spring 配置来源或 OTel 的参数会在 JVM 前拒绝。服务器路径和凭据不从本机复制，按目标环境提供；当前入口限定个人 `github-dev`，不隐式切换公司或其它环境。
 
-### 本机受控切换与日志采集
+### 运维检查与日志采集
 
-`scripts/manage-observed.py`用于现有进程的受控替换，不要求先发布远端 Git/Maven。它会先配置私有绑定、完成全部 prepare 和 dry-run，再核对个人 checkout classpath、服务主类、业务/管理端口归属，只对明确选中的旧 PID 发 TERM；超时不强杀。任一 preflight 失败保留旧 JVM。新进程必须通过 health、正确令牌 metrics、无/错令牌拒绝，才记为 verified。
+下述工具供已授权运维验收与进程接管使用；日常开发仍直接点 IDEA 原生 Run/Debug。`scripts/manage-observed.py`用于现有进程的受控替换，不要求先发布远端 Git/Maven。它会先配置私有绑定、完成全部 prepare 和 dry-run，再核对个人 checkout classpath、服务主类、业务/管理端口归属，只对明确选中的旧 PID 发 TERM；超时不强杀。任一 preflight 失败保留旧 JVM。新进程必须通过 health、正确令牌 metrics、无/错令牌拒绝，才记为 verified。
 
 ```bash
 python3 scripts/manage-observed.py collector-start --runtime-env /secure/observability.env
@@ -146,7 +146,7 @@ FF合并同时使用`--no-overwrite-ignore`：若远端开始跟踪与本机igno
 | `1` | 输入或操作错误；查看逐仓错误信息 |
 | `2` | 更新时至少一个仓库因保护条件被跳过 |
 
-## IDEA统一导入
+## 构建模型与IDE导入
 
 ```bash
 ./scripts/idea.sh
@@ -156,11 +156,13 @@ FF合并同时使用`--no-overwrite-ignore`：若远端开始跟踪与本机igno
 
 用IDEA打开本工作区根目录，设置Gradle JVM为JDK 17，并从根`settings.gradle`进行一次Gradle导入。根构建将清单中的11个Java项目作为included builds导入。缺少项目时会提示先初始化，不会静默忽略。
 
-复用symlink时，根构建将included build路径解析为目标的真实路径，避免IDEA模型把链接路径与真实路径视为不同项目；构建名仍沿用清单，所以`:服务名:bootRun`入口保持一致。
+`idea.sh`在本机`.idea/gradle.xml`中只为当前工作区链接设置`delegatedBuild=false`，让原生Run/Debug使用IDEA编译；保留`testRunner`、其它项目链接及未知设置。新克隆可生成该根链接；模糊/重复链接或文件在规划后发生变化时拒绝覆盖。该本机设置不进入Git，不改变全局IDE选项或服务器打包方式。
+
+复用symlink时，根构建将included build路径解析为目标的真实路径，避免IDEA模型把链接路径与真实路径视为不同项目；构建名保持一致。
 
 `idea.sh`生成本机忽略的`.idea/vcs.xml`，为总仓和12个子仓按真实目录保留唯一Git映射。复用symlink时与Gradle导入路径一致，清理同一仓库的链接路径、真实路径和重复条目，避免分支菜单出现两组仓库；不相关的自定义映射和非Git配置保留。运行脚本后可在IDEA版本控制设置中确认这些独立仓库。
 
-`.run/`提供9个服务的共享Gradle观测入口，通过显式init与根构建调用`:服务名:bootRun`，每个服务的工作目录为自己的项目目录；先按上文准备本机私有观测绑定。原生Application入口按上文受限迁移。本仓库不提供真实凭据，也不自动启动数据库、中间件或业务服务。
+IDEA日常使用各服务主类的原生Spring Boot/Application Run/Debug，按上文受限迁移以启用直接Python检查。本节Gradle composite仅用于构建整合与验证，不替代原生运行；标准wrapper不改，保留的显式观测init/CLI仅兼容既有运维自动化。本仓库不提供真实凭据，也不自动启动数据库、中间件或业务服务。
 
 `idea.sh`同时为清单中的Web前端生成本机忽略的`.idea/workspace-web/admin-web.iml`，并将它合并进`.idea/modules.xml`。前端作为独立`WEB_MODULE`出现在Project树，新建内容根使用复用目录的真实绝对`file://`路径，排除`node_modules`、`dist`和`coverage`；真实路径只写入被忽略的本机配置。旧版受管`.iml`中的`$PROJECT_DIR$`内容根及其下URL会迁移为绝对路径，避免IDEA未展开宏导致`Watch roots should be absolute`；IDE自身改写的等价`$MODULE_DIR$`和绝对路径保留。已有Java/自定义模块、用户设置及已登记的同目录Web模块保留；重复执行幂等，`--dry-run`不写文件，损坏XML或输出symlink会停止并保留原文件。
 
@@ -187,7 +189,7 @@ git -C utils commit -m "修复工具方法"
 git -C utils push
 ```
 
-只有清单、脚本、共享入口和文档等工作区改动才提交到总仓。12个子仓的提交与推送互相独立，没有跨仓原子提交；跨仓变更应记录各仓提交并按各自流程验证和发布。
+只有清单、脚本、IDE配置工具和文档等工作区改动才提交到总仓。12个子仓的提交与推送互相独立，没有跨仓原子提交；跨仓变更应记录各仓提交并按各自流程验证和发布。
 
 ## 验证与CI边界
 
@@ -198,7 +200,7 @@ python3 -m unittest discover -s tests -v
 bash -n scripts/bootstrap.sh scripts/update.sh scripts/status.sh scripts/idea.sh
 ```
 
-测试使用临时本地Git仓库，不向真实子项目注入测试提交。默认测试还会检查共享运行配置；需要执行Gradle临时fixture验证时，在已准备JDK 17的环境中运行：
+测试使用临时本地Git仓库，不向真实子项目注入测试提交。默认测试还会检查原生运行配置生成与共享Gradle启动入口退役；需要执行Gradle临时fixture验证时，在已准备JDK 17的环境中运行：
 
 ```bash
 WORKSPACE_GRADLE_TESTS=1 python3 -m unittest discover -s tests -p test_composite.py -v
@@ -206,7 +208,7 @@ WORKSPACE_GRADLE_TESTS=1 python3 -m unittest discover -s tests -p test_composite
 
 GitHub Actions在`main`、`test`、`preprod`推送及面向`main`的PR上运行，也支持手动触发。CI分别运行脚本测试，以及Gradle临时fixture、真实公开清单下载、JDK 17下的`verifyWorkspace`和`compileAllJava`。
 
-根`compileAllJava`默认只编译Java源码，不运行子仓业务测试、不启动服务、不发布远端制品。已知Gateway子仓有3个配置契约测试失败；本工作区未修复该问题，编译通过不能代表这些测试通过。IDEA实际导入、业务测试、部署和运行态验收也需要分别确认。
+根`compileAllJava`默认只编译Java源码，不运行子仓业务测试、不启动服务、不发布远端制品。编译通过不能代表子仓业务测试通过。IDEA实际导入、业务测试、部署和运行态验收需要分别确认，并以对应仓库本轮实际检查结果为准。
 
 ## 本机文件与隐私
 
