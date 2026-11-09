@@ -331,6 +331,8 @@ def prepare(service, version, runtime_env, dev_env, state_dir, write=True):
                 "spring.application.version": version, "logging.file.name": str(logs / f"{service}.json"),
                 "logging.structured.format.file": "ecs", "logging.structured.format.console": "ecs",
                 "logging.structured.json.include": SAFE_FIELDS,
+                # 固定 SPI 逐键合并安全字段，避免 agent MDC 与业务 KVP 重名使 ECS 整条丢失。
+                "logging.structured.json.context.include": "false",
                 "logging.logback.rollingpolicy.max-file-size": "10MB",
                 "logging.logback.rollingpolicy.max-history": "3",
                 "logging.logback.rollingpolicy.total-size-cap": "40MB",

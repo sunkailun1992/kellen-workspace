@@ -91,6 +91,7 @@ class RuntimePreparationTests(unittest.TestCase):
                 self.assertIn("fleet.observability.enabled=true\n", app)
                 self.assertIn("fleet.observability.max-body-bytes=8192\n", app)
                 self.assertIn("fleet.observability.ai-content-enabled=false\n", app)
+                self.assertIn("logging.structured.json.context.include=false\n", app)
 
     def test_structured_io_fields_preserve_safe_events_without_raw_messages(self):
         result = runtime.prepare("rag", "1.0.0", **self.inputs)

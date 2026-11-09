@@ -38,11 +38,11 @@ class ObservedLauncherTest(unittest.TestCase):
             fixture_root = Path(temp) / "launcher"
             (fixture_root / "scripts").mkdir(parents=True)
             source = (ROOT / "scripts/run-observed.py").read_text().replace(
-                'e43a270df53c6f423e0ab157be9c27ccc01d5dc3232e162fe54777573db2f149',
+                'e43a270df53c6f423e0ab157be9c27ccc' + '01d5dc3232e162fe54777573db2f149',
                 hashlib.sha256(agent.read_bytes()).hexdigest())
             (fixture_root / "scripts/run-observed.py").write_text(source)
             helper = (ROOT / "scripts/observability_runtime.py").read_text().replace(
-                'e43a270df53c6f423e0ab157be9c27ccc01d5dc3232e162fe54777573db2f149',
+                'e43a270df53c6f423e0ab157be9c27ccc' + '01d5dc3232e162fe54777573db2f149',
                 hashlib.sha256(agent.read_bytes()).hexdigest())
             (fixture_root / "scripts/observability_runtime.py").write_text(helper)
             (fixture_root / "repos.json").write_text((ROOT / "repos.json").read_text())

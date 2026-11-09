@@ -46,7 +46,7 @@ def main():
         command = [java, *receipt["jvm_arguments"], "-jar", str(artifact), *application_args]
         if args.dry_run:
             print(json.dumps({"service": args.service, "version": version, "agent": "2.33.1 verified",
-                              "privacy_extension": "0.1.0 verified", "application_argument_count": len(application_args),
+                              "privacy_extension": "0.1.1 verified", "application_argument_count": len(application_args),
                               "secret_values": "not displayed", "files_written": False}))
             return 0
         # 配置文件是这次启动的权威；旧 shell 中的遥测变量不能覆盖私有文件。

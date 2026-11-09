@@ -83,6 +83,12 @@ Java 文件日志写入所选 state 目录下的 `logs/`，Boot ECS 保留安全
 
 本机访问自身私网地址可能被本机路由/网络策略阻断，即使 NAS 已成功抓取。托管验证超时会保留新 JVM 和诊断回执，不自动回滚或杀进程；先从 NAS 核 health、令牌边界和目标状态，再决定是否重试。
 
+## 个人 PostgreSQL 数据迁移
+
+[`scripts/database/migrate.py`](scripts/database/migrate.py) 是个人七库的一次性 JDBC 迁移入口，默认只读计划；显式执行要求已停止业务写入、目标空表、完整 schema 审核及本次 `plan_sha256`。PostgreSQL 只部署在 NAS，本机运行 Java 17/JDBC 客户端，不安装或运行本地数据库服务。来源、目标均限固定个人七库，不包括公司、中间件或独立调度平台数据库。
+
+工具保留原 ID，以每库事务复制和内容指纹校验，并通过受限 receipts 记录提交与序列校准；不创建表、删除、覆盖或自动切换 Nacos。全部 VERIFIED、独立新连接对账、服务启动、管理端点、日志和链路仍须分别验收。应用恢复写入后不得用旧迁移计划重跑或恢复。完整配置形状、超时单位、空目标准备及恢复限制见 [七库迁移说明](scripts/database/README.md)。
+
 ## 环境要求
 
 - Git、Bash、Python 3.10+（只使用标准库，无需安装Python依赖）。
@@ -223,7 +229,7 @@ GitHub Actions在`main`、`test`、`preprod`推送及面向`main`的PR上运行�
 
 github-dev使用`always_on`，包括收到`traceparent`中sampled=0的请求，保留原Trace/parent并向下游传播采样标记；旧`FLEET_TRACE_RATIO`不再控制此环境。Java隐私扩展0.1.1在实际exporter前保留有限GenAI模型/Prompt版本/供应商报告用量与Dubbo协议元数据，继续清除原始异常、SQL、URL、模型正文和未知属性。完整Trace以验收请求清单逐项读回为准，100%采样不能替代存储持久化保证。
 
-普通HTTP请求通过`com:fleet-observability:0.1.0`统一输出`event=http.server.exchange`：方法、框架路由模板、状态、耗时、真实读写字节、完整性、结果及同Trace/Span标识。每体最多8192字节，仅对路由/类型白名单作投影；未知或无效JSON整段省略，不截出原始前缀。SSE、二进制和AI HTTP正文不缓存。`request_body_omitted/response_body_omitted`明确省略原因；完整性为false或未知字节不代表空体。
+普通HTTP请求通过`com:fleet-observability:0.1.2`统一输出`event=http.server.exchange`：方法、框架路由模板、状态、耗时、真实读写字节、完整性、结果及同Trace/Span标识。每体最多8192字节，仅对路由/类型白名单作投影；未知或无效JSON整段省略，不截出原始前缀。SSE、二进制和AI HTTP正文不缓存。`request_body_omitted/response_body_omitted`明确省略原因；完整性为false或未知字节不代表空体。
 
 AI的模型调用单独建`ai.model.call`子span，记忆/RAG编排与模型计时分开。日志摘要由代码按操作、模型、长度、finish reason生成；token仅在供应商实际报告时出现，公开reasoning摘要的存在性不等于模型隐藏的内部推理。当前自由Prompt/回答正文采集保持关闭，诊断投影只接受经过类型白名单的元数据，不能通过设置日志级别打开原始正文。
 
