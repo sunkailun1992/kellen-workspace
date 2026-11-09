@@ -18,6 +18,8 @@ IDE原生开发与服务器Jar入口共用 `scripts/observability_runtime.py` �
 
 gateway、ai-agent 的独立管理端口为 `17100`、`17310`。私有 runtime env 必须显式提供 `FLEET_MANAGEMENT_BIND_ADDRESS`，与 NAS Prometheus 目标一致，仅接受明确私网地址；不从 OTLP 出站路由猜入站网卡，不默认绑定所有接口。其它服务沿用受保护 Actuator 入口。
 
+三个 Dubbo 提供方共用准备入口分配固定 Tri 端口：`user=27500`、`rag=27200`、`ai-memory=27301`；其余六个服务不写 RPC 端口。端口写入受管 `application.properties`，由现有 `spring.config.additional-location` 加载，原生 IDEA 与服务器 Jar 使用相同设置。实际 Boot 4.0.4 / Nacos 2025.1.0.0 loader 的离线配置验证确认此文件覆盖导入的 `dubbo.protocol.port=-1`；不依赖各 JVM 同时探测空闲端口。启动前仍须核对端口无人占用，发现未知监听进程应停止切换，不自动终止它。具体原理、覆盖保护与验收边界见 [Dubbo 固定端口说明](docs/dubbo-provider-ports.md)。
+
 ### 一次配置本机私有引用
 
 ```bash

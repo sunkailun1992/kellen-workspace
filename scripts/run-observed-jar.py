@@ -33,7 +33,7 @@ def main():
     args, application_args = parser.parse_known_args()
     try:
         application_args = application_args[1:] if application_args[:1] == ["--"] else application_args
-        validate_application_args(application_args)
+        validate_application_args(application_args, service=args.service)
         artifact = args.jar.resolve(strict=True)
         version = jar_version(artifact, args.service)
         inputs = load_binding() if not args.runtime_env else {
@@ -47,10 +47,10 @@ def main():
         if args.dry_run:
             print(json.dumps({"service": args.service, "version": version, "agent": "2.33.1 verified",
                               "privacy_extension": "0.1.1 verified", "application_argument_count": len(application_args),
-                              "secret_values": "not displayed", "files_written": False}))
+                              "rpc_port": receipt["rpc_port"], "secret_values": "not displayed", "files_written": False}))
             return 0
         # 配置文件是这次启动的权威；旧 shell 中的遥测变量不能覆盖私有文件。
-        environment = controlled_environment(os.environ)
+        environment = controlled_environment(os.environ, service=args.service)
         os.execvpe(java, command, environment)
     except Exception as error:
         print(json.dumps({"status": "failed", "error_class": type(error).__name__, "private_values": "omitted"}))

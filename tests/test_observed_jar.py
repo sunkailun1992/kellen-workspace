@@ -53,6 +53,8 @@ public class Fixture {
     Properties p = new Properties();
     try (InputStream input = Files.newInputStream(Path.of(URI.create(System.getProperty("spring.config.additional-location"))))) { p.load(input); }
     if (!"ecs".equals(p.getProperty("logging.structured.format.file"))) throw new IllegalStateException();
+    if (!"27200".equals(p.getProperty("dubbo.protocol.port"))) throw new IllegalStateException();
+    if (System.getenv("DUBBO_PROTOCOL_PORT") != null) throw new IllegalStateException();
     Path log = Path.of(p.getProperty("logging.file.name"));
     Files.writeString(log, "{\"event\":\"fixture_started\",\"service\":\"rag\",\"version\":\"1.2.3\"}\n");
     HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
@@ -98,7 +100,8 @@ public class Fixture {
         self.addCleanup(collector.server_close)
         self.addCleanup(collector.shutdown)
         self.env.write_text(self.env.read_text().replace("http://127.0.0.1:14318", f"http://127.0.0.1:{collector.server_port}"))
-        proc = subprocess.Popen(self.command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        environment = dict(os.environ, DUBBO_PROTOCOL_PORT="1", DUBBO_UNRELATED_TOOL_METADATA="keep")
+        proc = subprocess.Popen(self.command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=environment)
         try:
             signal = self.root / "state/logs/rag.json.port"
             deadline = time.monotonic() + 12
@@ -130,10 +133,19 @@ public class Fixture {
     def test_dry_run_writes_nothing_and_rejects_wrong_application_identity(self):
         result = subprocess.run([*self.command, "--dry-run"], text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(json.loads(result.stdout)["rpc_port"], 27200)
         self.assertFalse((self.root / "state").exists())
+
         result = subprocess.run([*self.command, "--dry-run", "--", "--logging.structured.json.include=message"], text=True, capture_output=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse((self.root / "state").exists())
+
+    def test_provider_cli_port_override_is_rejected_before_preparation_or_jvm(self):
+        for argument in ("--dubbo.protocol.port=1", "--TRI_DUBBO_PORT_TO_BIND=1"):
+            result = subprocess.run([*self.command, "--dry-run", "--", argument], text=True, capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse((self.root / "state").exists())
+            self.assertNotIn("SYNTHETIC_", result.stdout + result.stderr)
         self.assertNotIn("SYNTHETIC_", result.stdout + result.stderr)
         command = list(self.command)
         command[2] = "gateway"

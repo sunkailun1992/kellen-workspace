@@ -76,6 +76,70 @@ class RuntimePreparationTests(unittest.TestCase):
         self.assertFalse(self.inputs["state_dir"].exists())
         self.assertEqual(result["version"], "1.1.6")
 
+    def test_only_rpc_providers_receive_distinct_fixed_ports_in_shared_preparation(self):
+        expected = {"user": 27500, "rag": 27200, "ai-memory": 27301}
+        for service in runtime.SERVICES:
+            with self.subTest(service=service):
+                dry = runtime.prepare(service, "1.2.3", **self.inputs, write=False)
+                self.assertEqual(dry.get("rpc_port"), expected.get(service))
+                self.assertFalse(self.inputs["state_dir"].exists())
+        for service in runtime.SERVICES:
+            result = runtime.prepare(service, "1.2.3", **self.inputs)
+            text = Path(result["app_config"]).read_text()
+            if service in expected:
+                self.assertIn(f"dubbo.protocol.port={expected[service]}\n", text)
+            else:
+                self.assertNotIn("dubbo.protocol.port=", text)
+
+    def test_provider_port_guards_are_exact_and_do_not_claim_other_dubbo_options(self):
+        protected = ("dubbo.protocol.port", "DUBBO_PROTOCOL_PORT", "dubbo-protocol-port",
+                     "DUBBO_PORT_TO_BIND", "TRI_DUBBO_PORT_TO_BIND", "DUBBO_PORT_TO_REGISTRY",
+                     "TRI_DUBBO_PORT_TO_REGISTRY", "dubbo.protocols.tri.port")
+        unrelated = ("DUBBO_METADATA_REPORT_ADDRESS", "DUBBO_APPLICATION_NAME", "DUBBO_UNRELATED_TOOL_METADATA")
+        for service in runtime.SERVICES:
+            receipt = runtime.prepare(service, "1.2.3", **self.inputs, write=False)
+            provider = service in {"user", "rag", "ai-memory"}
+            for name in protected:
+                with self.subTest(service=service, name=name):
+                    self.assertEqual(runtime.ide_controlled_env_name(name, receipt), provider)
+                    if provider:
+                        with self.assertRaises(ValueError):
+                            runtime.validate_application_args([f"--{name}=1"], service=service)
+                    else:
+                        runtime.validate_application_args([f"--{name}=1"], service=service)
+            for name in unrelated:
+                self.assertFalse(runtime.ide_controlled_env_name(name, receipt))
+            incoming = {"PATH": "keep", "DUBBO_PROTOCOL_PORT": "1", "DUBBO_UNRELATED_TOOL_METADATA": "keep"}
+            cleaned = runtime.controlled_environment(incoming, service=service)
+            self.assertEqual("DUBBO_PROTOCOL_PORT" in cleaned, not provider)
+            self.assertIn("DUBBO_UNRELATED_TOOL_METADATA", cleaned)
+
+    def test_native_provider_preflight_rejects_vm_program_and_environment_port_overrides(self):
+        path = self.create_idea_fixture()
+        _, _, after, _ = idea.candidate(self.root, self.inputs)
+        path.write_bytes(after)
+        receipt = runtime.prepare("ai-memory", "1.2.3", **self.inputs, write=False)
+        with patch.dict(os.environ, {}, clear=True):
+            runtime.check_idea_runtime("ai-memory", receipt, self.root)
+            for key in ("DUBBO_PROTOCOL_PORT", "TRI_DUBBO_PORT_TO_BIND"):
+                with patch.dict(os.environ, {key: ""}):
+                    with self.assertRaises(runtime.RuntimeValidationError) as error:
+                        runtime.check_idea_runtime("ai-memory", receipt, self.root)
+                    self.assertEqual(error.exception.reason_code, "IDE_ENV_OVERRIDE")
+            for option, suffix, reason in (("VM_PARAMETERS", " -Ddubbo.protocol.port=1", "IDE_VM_OVERRIDE"),
+                                            ("PROGRAM_PARAMETERS", " --dubbo.protocol.port=1", "IDE_APPLICATION_ARGS_OVERRIDE")):
+                tree = workspace.parse_idea_xml_bytes(after)
+                config = tree.getroot().find("./component/configuration[@name='ai-memory']")
+                target = config.find(f"option[@name='{option}']")
+                if target is None:
+                    import xml.etree.ElementTree as ET
+                    target = ET.SubElement(config, "option", name=option, value="")
+                target.set("value", target.get("value", "") + suffix)
+                path.write_bytes(workspace.idea_xml_bytes(tree))
+                with self.assertRaises(runtime.RuntimeValidationError) as error:
+                    runtime.check_idea_runtime("ai-memory", receipt, self.root)
+                self.assertEqual(error.exception.reason_code, reason)
+
     def test_development_runtime_selects_non_parent_sampling_for_every_service(self):
         # 旧私有比例不能让个人开发环境继续漏掉入站sampled=0请求。
         with self.env.open("a") as stream:

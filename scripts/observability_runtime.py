@@ -22,6 +22,10 @@ SERVICES = {
     "mcp": "com.kellen.McpApplication", "message": "com.kellen.MessageApplication",
     "report": "com.kellen.ReportApplication",
 }
+# Dubbo 自动端口只在单个 JVM 内缓存，不能给并行启动的独立提供方保留 socket。
+RPC_PORTS = {"user": 27500, "rag": 27200, "ai-memory": 27301}
+RPC_PORT_PROPERTY_NAMES = frozenset({"dubboprotocolport", "dubboprotocolstriport", "dubboporttobind",
+                                     "tridubboporttobind", "dubboporttoregistry", "tridubboporttoregistry"})
 SAFE_FIELDS = ",".join((
     "@timestamp", "log", "log.level", "service", "service.name", "service.version", "service.environment",
     "event", "summary", "duration_ms", "outcome", "stage", "error_type", "error_code", "trace_id", "span_id",
@@ -127,20 +131,21 @@ def idea_vm_arguments(value):
         raise RuntimeValidationError("IDE_VM_ARGUMENTS_INVALID") from None
 
 
-def controlled_environment(environment):
+def controlled_environment(environment, service=None):
     return {key: value for key, value in environment.items()
-            if not controlled_env_name(key)}
+            if not controlled_env_name(key, service)}
 
 
-def managed_property(name):
+def managed_property(name, service=None):
     normalized = re.sub(r"[^a-z0-9]", "", name.lower())
-    return normalized.startswith(("otel", "management", "securityactuator", "logging", "github", "appenv", "fleetobservability",
-                                  "springapplicationversion", "springapplicationname", "springapplicationjson",
-                                  "springconfig", "springprofiles"))
+    return ((service in RPC_PORTS and normalized in RPC_PORT_PROPERTY_NAMES)
+            or normalized.startswith(("otel", "management", "securityactuator", "logging", "github", "appenv", "fleetobservability",
+                                      "springapplicationversion", "springapplicationname", "springapplicationjson",
+                                      "springconfig", "springprofiles")))
 
 
-def controlled_env_name(name):
-    return managed_property(name) or name in {"JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS"}
+def controlled_env_name(name, service=None):
+    return managed_property(name, service) or name in {"JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS"}
 
 
 def ide_controlled_env_name(name, receipt):
@@ -151,7 +156,7 @@ def ide_controlled_env_name(name, receipt):
         protected = {re.sub(r"[^a-z0-9]", "", key.lower())
                      for key in (*IDE_IDENTITY_ENV_NAMES, *project_names) if isinstance(key, str)}
         return normalized in protected
-    return controlled_env_name(name)
+    return controlled_env_name(name, receipt.get("service"))
 
 
 def validate_idea_application_args(arguments, receipt):
@@ -172,8 +177,8 @@ def private_output(path):
             break
 
 
-def validate_application_args(arguments):
-    if any(argument.startswith("--") and managed_property(argument[2:].split("=", 1)[0]) for argument in arguments):
+def validate_application_args(arguments, service=None):
+    if any(argument.startswith("--") and managed_property(argument[2:].split("=", 1)[0], service) for argument in arguments):
         raise ValueError("application argument overrides private runtime configuration")
 
 
@@ -340,6 +345,9 @@ def prepare(service, version, runtime_env, dev_env, state_dir, write=True):
                 "fleet.observability.max-body-bytes": "8192",
                 "fleet.observability.max-ai-content-characters": "2048",
                 "fleet.observability.ai-content-enabled": "false"})
+    rpc_port = RPC_PORTS.get(service)
+    if rpc_port is not None:
+        app["dubbo.protocol.port"] = str(rpc_port)
     if service in {"gateway", "ai-agent"}:
         address = ipaddress.ip_address(environment["FLEET_MANAGEMENT_BIND_ADDRESS"])
         if not address.is_private or address.is_unspecified or address.is_loopback:
@@ -365,7 +373,8 @@ def prepare(service, version, runtime_env, dev_env, state_dir, write=True):
         write_private(agent_config, properties(telemetry))
         write_private(app_config, properties(app))
     # 回执只有文件路径、版本、固定开关和项目配置键名；令牌、地址等值不回显。
-    return {"service": service, "version": version, "agent": str(agent), "privacy": str(privacy),
+    return {"service": service, "version": version, "rpc_port": rpc_port, "files_written": write,
+            "agent": str(agent), "privacy": str(privacy),
             "agent_config": str(agent_config), "app_config": str(app_config),
             "project_environment_names": sorted(key for key in environment if key.startswith("GITHUB_")),
             "jvm_arguments": [f"-javaagent:{agent}", f"-Dotel.javaagent.extensions={privacy}",

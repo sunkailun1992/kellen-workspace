@@ -31,7 +31,7 @@ def main():
                           "agent": "2.33.1 checksum verified", "privacy_extension": "0.1.1 checksum verified",
                           "runtime": "full preflight verified", "secrets": "not displayed"}, ensure_ascii=False))
         return 0
-    environment = dict(controlled_environment(os.environ), FLEET_OBSERVABILITY_SERVICE=args.service)
+    environment = dict(controlled_environment(os.environ, service=args.service), FLEET_OBSERVABILITY_SERVICE=args.service)
     return subprocess.call(command, cwd=ROOT, env=environment)
 
 
