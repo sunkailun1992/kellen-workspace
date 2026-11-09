@@ -12,7 +12,7 @@
 
 ## IDEA原生Spring Boot与服务器Jar观测启动
 
-IDE原生开发与服务器Jar入口共用 `scripts/observability_runtime.py` 的完整 preflight：固定官方 OTel Java agent `2.33.1` 的 SHA-256/版本，以及本地构建隐私扩展 `0.1.0` 的 SHA-256/兼容版本；任一缺失、摘要或版本不符均在服务 JVM 启动前拒绝。仅给选定服务挂 agent，不使用全局 `JAVA_TOOL_OPTIONS`，不影响编译器和测试 JVM。
+IDE原生开发与服务器Jar入口共用 `scripts/observability_runtime.py` 的完整 preflight：固定官方 OTel Java agent `2.33.1` 的 SHA-256/版本，以及本地构建隐私扩展 `0.1.1` 的 SHA-256/兼容版本；任一缺失、摘要或版本不符均在服务 JVM 启动前拒绝。仅给选定服务挂 agent，不使用全局 `JAVA_TOOL_OPTIONS`，不影响编译器和测试 JVM。
 
 先按 `utils/ops/github-dev/observability/agent-extension/README.md` 准备两个 Git 外制品。私有 runtime env 提供 `OTEL_JAVAAGENT_PATH`、`OTEL_JAVAAGENT_SHA256`、`FLEET_PRIVACY_EXTENSION_PATH`、`FLEET_PRIVACY_EXTENSION_SHA256`、`OTEL_EXPORTER_OTLP_ENDPOINT` 和需要的 `OTEL_EXPORTER_OTLP_HEADERS`；私有 dev env 提供既有 `GITHUB_*` 配置及 `GITHUB_ACTUATOR_TOKEN`。两文件必须由当前用户持有、0600、非 symlink，内容按简单 env 格式解析，不执行 shell。
 
@@ -77,7 +77,7 @@ python3 scripts/manage-observed.py start user --replace-pid <已核个人JVM的P
   --runtime-env /secure/observability.env --dev-env /secure/github-dev.env
 ```
 
-Java 文件日志写入所选 state 目录下的 `logs/`，Boot ECS 仅保留元数据白名单；单服务轮转10MB、保留3期、总上限40MB。不要同步写 NAS 远程文件。Java 在 Mac 运行时，NAS Collector 无法直接读取 Mac 日志，应用主机也需运行文件 Collector；服务器同样复用当地采集器并让 `FLEET_LOG_DIR` 指向所选 state 的 `logs/`。本机入口支持固定官方 `otelcol-contrib 0.164.0`，私有 env 提供 `FLEET_COLLECTOR_PATH`、`FLEET_COLLECTOR_SHA256`、`FLEET_OTLP_TOKEN`；本机数值遥测仅绑定 `127.0.0.1:18888`，不占用现有8888进程。不会自动安装工具、数据库或中间件。
+Java 文件日志写入所选 state 目录下的 `logs/`，Boot ECS 保留安全HTTP投影及AI元数据白名单；单服务轮转10MB、保留3期、总上限40MB。不要同步写 NAS 远程文件。Java 在 Mac 运行时，NAS Collector 无法直接读取 Mac 日志，应用主机也需运行文件 Collector；服务器同样复用当地采集器并让 `FLEET_LOG_DIR` 指向所选 state 的 `logs/`。本机入口支持固定官方 `otelcol-contrib 0.164.0`，私有 env 提供 `FLEET_COLLECTOR_PATH`、`FLEET_COLLECTOR_SHA256`、`FLEET_OTLP_TOKEN`；本机数值遥测仅绑定 `127.0.0.1:18888`，不占用现有8888进程。不会自动安装工具、数据库或中间件。
 
 共享 `logging.yml` 固定环境 `github-dev`；prepare 同时设置应用版本和 OTel resource 版本，禁用原始异常 events、重复 metrics/log exporter，并加载隐私扩展。独立管理端口会迁走 health/metrics，业务端口另外核监听 JVM 归属。启动进程不是操作系统自启/守护程序；文件存在、编译成功、IDE配置写入、服务启动、NAS目标UP、ES入库和Jaeger链路需分别验收。
 
@@ -217,3 +217,14 @@ GitHub Actions在`main`、`test`、`preprod`推送及面向`main`的PR上运行�
 本机验证生成的`.class`、`.log`及各层级私有环境文件也会被忽略；不含凭据的`.env.example`、`.env.sample`、`.env.template`等示例模板可正常跟踪。
 
 不要把凭据、真实运行配置、个人绝对路径、公司项目、私有历史备份或归档加入总仓。源码检查工具应在本仓库已跟踪文件范围内运行；检查子项目时在对应独立仓库中单独执行，避免递归扫描被忽略的checkout或symlink。
+
+
+### 开发环境全量Trace与安全输入输出
+
+github-dev使用`always_on`，包括收到`traceparent`中sampled=0的请求，保留原Trace/parent并向下游传播采样标记；旧`FLEET_TRACE_RATIO`不再控制此环境。Java隐私扩展0.1.1在实际exporter前保留有限GenAI模型/Prompt版本/供应商报告用量与Dubbo协议元数据，继续清除原始异常、SQL、URL、模型正文和未知属性。完整Trace以验收请求清单逐项读回为准，100%采样不能替代存储持久化保证。
+
+普通HTTP请求通过`com:fleet-observability:0.1.0`统一输出`event=http.server.exchange`：方法、框架路由模板、状态、耗时、真实读写字节、完整性、结果及同Trace/Span标识。每体最多8192字节，仅对路由/类型白名单作投影；未知或无效JSON整段省略，不截出原始前缀。SSE、二进制和AI HTTP正文不缓存。`request_body_omitted/response_body_omitted`明确省略原因；完整性为false或未知字节不代表空体。
+
+AI的模型调用单独建`ai.model.call`子span，记忆/RAG编排与模型计时分开。日志摘要由代码按操作、模型、长度、finish reason生成；token仅在供应商实际报告时出现，公开reasoning摘要的存在性不等于模型隐藏的内部推理。当前自由Prompt/回答正文采集保持关闭，诊断投影只接受经过类型白名单的元数据，不能通过设置日志级别打开原始正文。
+
+在Grafana“探索”选择Elasticsearch，查询`Resource.service.name:"rag" AND event:"http.server.exchange"`；生成的`summary`显示可读信息，展开条目查看安全`request_body/response_body`、省略原因及`trace_id`链接。Jaeger v3原生UI可按服务/时间检索整条链。实际验收工具是`scripts/acceptance_run.py`，默认只计划，显式`--execute`才发清单；`--readback-ledger`仅重查已发Trace，避免重复调用模型。

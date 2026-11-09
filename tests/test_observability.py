@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ObservedLauncherTest(unittest.TestCase):
-    def run_launcher(self, service="rag", digest=None, extension=True, extension_digest=None, agent_version="2.33.1", extension_version="0.1.0", binding=True):
+    def run_launcher(self, service="rag", digest=None, extension=True, extension_digest=None, agent_version="2.33.1", extension_version="0.1.1", binding=True):
         with tempfile.TemporaryDirectory(prefix="observability 空格 ") as temp:
             agent = Path(temp) / "agent.jar"
             with zipfile.ZipFile(agent, 'w') as jar:

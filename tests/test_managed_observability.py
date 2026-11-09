@@ -2,7 +2,10 @@
 import importlib.util
 import sys
 import hashlib
+import io
 import os
+import stat
+import subprocess
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -17,6 +20,85 @@ spec.loader.exec_module(managed)
 
 
 class ManagedObservabilityTest(unittest.TestCase):
+    def test_collector_uses_owner_only_persistent_offsets_and_ignores_env_override(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary = root / "collector"
+            binary.write_bytes(b"synthetic pinned fixture")
+            state = root / "state"
+            state.mkdir(mode=0o700)
+            (state / "logs").mkdir(mode=0o700)
+            digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+            environment = {"FLEET_COLLECTOR_PATH": str(binary), "FLEET_COLLECTOR_SHA256": digest,
+                           "OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:14318",
+                           "FLEET_LOG_STATE_DIR": str(root / "untrusted-override")}
+            child = SimpleNamespace(pid=456, poll=lambda: None)
+            with patch.object(managed, "ROOT", root), patch.object(managed, "PINNED_COLLECTOR_SHA256", digest), \
+                    patch.object(managed, "listener", return_value=[]), patch.object(managed.time, "sleep"), \
+                    patch.object(managed.subprocess, "run", return_value=SimpleNamespace(returncode=0)), \
+                    patch.object(managed, "process_command", return_value=""), patch("sys.stdout", io.StringIO()), \
+                    patch.object(managed.subprocess, "Popen", return_value=child) as launch:
+                managed.collector_start(environment, state)
+                offsets = state / "collector-offsets"
+                self.assertTrue(offsets.is_dir())
+                self.assertEqual(stat.S_IMODE(offsets.stat().st_mode), 0o700)
+                self.assertEqual(launch.call_args.kwargs["env"]["FLEET_LOG_STATE_DIR"], str(offsets))
+                marker = offsets / "receiver_filelog_runtime"
+                marker.write_bytes(b"synthetic persisted offset")
+                marker.chmod(0o600)
+                managed.collector_start(environment, state)
+                self.assertEqual(launch.call_count, 2)
+                self.assertEqual(marker.read_bytes(), b"synthetic persisted offset")
+
+    def test_collector_offset_state_rejects_trackable_output_and_foreign_owner(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "--quiet", str(root)], check=True)
+            state = root / "trackable-state"
+            state.mkdir(mode=0o700)
+            with self.assertRaises(ValueError):
+                managed.collector_offsets(state)
+            self.assertFalse((state / "collector-offsets").exists())
+        with tempfile.TemporaryDirectory() as temporary:
+            with patch.object(managed.os, "geteuid", return_value=os.geteuid() + 1):
+                with self.assertRaises(ValueError):
+                    managed.collector_offsets(Path(temporary))
+
+    def test_collector_rejects_shared_or_symlink_offsets_without_changing_them(self):
+        for kind in ("directory", "symlink", "file"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                state = root / "state"
+                state.mkdir(mode=0o700)
+                offsets = state / "collector-offsets"
+                if kind == "symlink":
+                    target = root / "outside"
+                    target.mkdir(mode=0o700)
+                    offsets.symlink_to(target)
+                else:
+                    offsets.mkdir(mode=0o700)
+                    if kind == "directory":
+                        offsets.chmod(0o755)
+                    else:
+                        marker = offsets / "existing"
+                        marker.write_bytes(b"must remain unchanged")
+                        marker.chmod(0o644)
+                binary = root / "collector"
+                binary.write_bytes(b"synthetic pinned fixture")
+                digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+                environment = {"FLEET_COLLECTOR_PATH": str(binary), "FLEET_COLLECTOR_SHA256": digest,
+                               "OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:14318"}
+                with patch.object(managed, "PINNED_COLLECTOR_SHA256", digest), \
+                        patch.object(managed, "listener", return_value=[]), patch.object(managed.time, "sleep"), \
+                        patch.object(managed.subprocess, "run", return_value=SimpleNamespace(returncode=0)), \
+                        patch.object(managed.subprocess, "Popen", return_value=SimpleNamespace(pid=456, poll=lambda: None)) as launch:
+                    with self.assertRaises(ValueError):
+                        managed.collector_start(environment, state)
+                    launch.assert_not_called()
+                if kind == "directory": self.assertEqual(stat.S_IMODE(offsets.stat().st_mode), 0o755)
+                if kind == "symlink": self.assertTrue(offsets.is_symlink())
+                if kind == "file": self.assertEqual(marker.read_bytes(), b"must remain unchanged")
+
     def test_full_preflight_failure_preserves_existing_jvm(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

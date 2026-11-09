@@ -96,6 +96,15 @@ tasks.register('plainJava', JavaExec)
             if repo["kind"] == "java-library":
                 cls = "Utils" if repo["name"] == "utils" else "RpcApi"
                 (source / f"{cls}.java").write_text(f"package fixture; public class {cls} {{}}\n")
+                if repo["name"] == "utils":
+                    with (path / "settings.gradle").open("a") as stream:
+                        stream.write("include 'fleet-observability'\n")
+                    lightweight = path / "fleet-observability"
+                    lightweight.mkdir()
+                    (lightweight / "build.gradle").write_text("plugins { id 'java-library' }\ngroup = 'com'\nversion = '1.0'\n")
+                    lightweight_source = lightweight / "src/main/java/fixture"
+                    lightweight_source.mkdir(parents=True)
+                    (lightweight_source / "FleetObservation.java").write_text("package fixture; public class FleetObservation {}\n")
             else:
                 (source / "App.java").write_text("package fixture; public class App { Utils u; RpcApi r; }\n")
                 with (path / "build.gradle").open("a") as f:
@@ -149,6 +158,38 @@ tasks.register('assertWorkspace') {
             self.assertIn(f"{repo['name']}: verified 2 personal SDK source dependencies, 2 company module dependencies", result.stdout)
         for repo in JAVA:
             self.assertTrue((self.root / repo["name"] / "build/classes/java/main/fixture").is_dir())
+
+    def test_lightweight_observability_uses_utils_subproject_and_preserves_company_module(self):
+        self.create_builds()
+        company = self.root / "fixture-maven/com/kellen/fleet-observability/1.0"
+        company.mkdir(parents=True)
+        with zipfile.ZipFile(company / "fleet-observability-1.0.jar", "w"):
+            pass
+        (company / "fleet-observability-1.0.pom").write_text("<project><modelVersion>4.0.0</modelVersion><groupId>com.kellen</groupId><artifactId>fleet-observability</artifactId><version>1.0</version></project>")
+        (self.root / "gateway/src/main/java/fixture/GatewayObservation.java").write_text("package fixture; public class GatewayObservation { FleetObservation observation; }\n")
+        with (self.root / "gateway/build.gradle").open("a") as stream:
+            stream.write("""
+dependencies {
+    implementation 'com:fleet-observability:999.0'
+    implementation 'com.kellen:fleet-observability:1.0'
+}
+tasks.register('assertLightweightWorkspace') {
+    doLast {
+        def dependencies = configurations.compileClasspath.incoming.resolutionResult.allDependencies
+        def personal = dependencies.find { it.requested.displayName == 'com:fleet-observability:999.0' }
+        def company = dependencies.find { it.requested.displayName == 'com.kellen:fleet-observability:1.0' }
+        assert personal.selected.id instanceof org.gradle.api.artifacts.component.ProjectComponentIdentifier
+        assert personal.selected.id.projectPath == ':fleet-observability'
+        assert company.selected.id instanceof org.gradle.api.artifacts.component.ModuleComponentIdentifier
+        assert company.selected.moduleVersion.group == 'com.kellen'
+        println 'VERIFIED lightweight source subproject; company module retained'
+    }
+}
+""")
+        result = self.gradle(':gateway:compileJava', ':gateway:assertLightweightWorkspace')
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn('VERIFIED lightweight source subproject; company module retained', result.stdout)
+        self.assertTrue((self.root / 'utils/fleet-observability/build/classes/java/main/fixture/FleetObservation.class').is_file())
 
     def test_symlinked_build_uses_target_working_directory(self):
         self.create_builds()

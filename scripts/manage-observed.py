@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import shlex
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -14,7 +15,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import urlsplit
 
-from observability_runtime import checkout_version, configure_binding, prepare
+from observability_runtime import SAFE_FIELDS, checkout_version, configure_binding, prepare, secure_directory
 
 ROOT = Path(__file__).resolve().parents[1]
 SERVICES = {
@@ -28,7 +29,6 @@ SERVICES = {
     "ai": (7300, "com.kellen.AiApplication"),
     "gateway": (7100, "com.kellen.GatewayApplication"),
 }
-SAFE_FIELDS = "@timestamp,log,log.level,service,service.name,service.version,service.environment,event,event.action,duration_ms,error_code,trace_id,span_id"
 # 官方 0.164.0 darwin_arm64 archive SHA af6a0c56… 校验后提取的原始二进制摘要。
 # 版本升级须重做 native validate/实际 filelog 出站验证，不能仅改私有 env 绕过固定版本。
 PINNED_COLLECTOR_SHA256 = "4d60abcd101c768268f885e3c42a5d2ca083d9d7461c68c6c77dc044371aa0c5"
@@ -192,13 +192,35 @@ def launch_preflight(args, state, service):
     prepare(service, checkout_version(service, ROOT), args.runtime_env, args.dev_env, state)
 
 
+def collector_offsets(state):
+    """offset 只落入 Git 外或明确忽略的私有 state；未知共享文件不自动 chmod/接管。"""
+    state = secure_directory(state)
+    offsets = state / "collector-offsets"
+    if offsets.is_symlink() or (offsets.exists() and not offsets.is_dir()):
+        raise ValueError("collector offset storage must be a private directory")
+    secure_directory(offsets)
+    for item in (state, offsets, *offsets.rglob("*")):
+        info = item.lstat()
+        mode = stat.S_IMODE(info.st_mode)
+        if info.st_uid != os.geteuid() or stat.S_ISLNK(info.st_mode) or mode & 0o077:
+            raise ValueError("collector offset storage ownership or permissions invalid")
+        if stat.S_ISDIR(info.st_mode):
+            if mode != 0o700:
+                raise ValueError("collector offset directory must be 0700")
+        elif not stat.S_ISREG(info.st_mode):
+            raise ValueError("collector offset storage must contain only private files")
+    return offsets
+
+
 def collector_start(environment, state):
     binary = Path(environment["FLEET_COLLECTOR_PATH"])
     digest = hashlib.sha256(binary.read_bytes()).hexdigest()
     if digest != environment["FLEET_COLLECTOR_SHA256"] or digest != PINNED_COLLECTOR_SHA256:
         raise ValueError("collector binary checksum mismatch")
+    offsets = collector_offsets(state)
     config = (ROOT / "utils/ops/github-dev/observability/collector-agent.yaml").resolve()
     environment["FLEET_LOG_DIR"] = str(state / "logs")
+    environment["FLEET_LOG_STATE_DIR"] = str(offsets)
     # 只绑定本机专用遥测端口，不占用已有工具常用的 8888，也不修改其它监听者。
     metrics_port = int(environment.get("FLEET_COLLECTOR_METRICS_PORT", "18888"))
     if listener(metrics_port):
@@ -225,7 +247,8 @@ def collector_start(environment, state):
     if child.poll() is not None:
         raise RuntimeError("native collector exited; private log retained")
     record = {"pid": child.pid, "status": "running", "version": "0.164.0", "configuration_validated": True,
-              "local_telemetry_port": metrics_port}
+              "local_telemetry_port": metrics_port, "offset_storage": "file_storage/offsets",
+              "offset_directory_private": True}
     write_record(record_file, record)
     print(json.dumps(record), flush=True)
 

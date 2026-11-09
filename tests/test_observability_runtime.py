@@ -33,7 +33,7 @@ class RuntimePreparationTests(unittest.TestCase):
         self.agent = self.root / "agent.jar"
         self.privacy = self.root / "privacy extension.jar"
         for path, manifest in ((self.agent, "Implementation-Version: 2.33.1\n"),
-                               (self.privacy, "Implementation-Version: 0.1.0\nFleet-Agent-Version: 2.33.1\n")):
+                               (self.privacy, "Implementation-Version: 0.1.1\nFleet-Agent-Version: 2.33.1\n")):
             with zipfile.ZipFile(path, "w") as jar:
                 jar.writestr("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\n" + manifest)
         self.agent_digest = hashlib.sha256(self.agent.read_bytes()).hexdigest()
@@ -75,6 +75,32 @@ class RuntimePreparationTests(unittest.TestCase):
         result = runtime.prepare("rag", "1.1.6", **self.inputs, write=False)
         self.assertFalse(self.inputs["state_dir"].exists())
         self.assertEqual(result["version"], "1.1.6")
+
+    def test_development_runtime_selects_non_parent_sampling_for_every_service(self):
+        # 旧私有比例不能让个人开发环境继续漏掉入站sampled=0请求。
+        with self.env.open("a") as stream:
+            stream.write("FLEET_TRACE_RATIO=0.1\n")
+        for service in runtime.SERVICES:
+            with self.subTest(service=service):
+                result = runtime.prepare(service, "1.0.0", **self.inputs)
+                agent = Path(result["agent_config"]).read_text()
+                app = Path(result["app_config"]).read_text()
+                self.assertIn("otel.traces.sampler=always_on\n", agent)
+                self.assertNotIn("otel.traces.sampler.arg=", agent)
+                self.assertIn("otel.propagators=tracecontext\n", agent)
+                self.assertIn("fleet.observability.enabled=true\n", app)
+                self.assertIn("fleet.observability.max-body-bytes=8192\n", app)
+                self.assertIn("fleet.observability.ai-content-enabled=false\n", app)
+
+    def test_structured_io_fields_preserve_safe_events_without_raw_messages(self):
+        result = runtime.prepare("rag", "1.0.0", **self.inputs)
+        fields = set(runtime.SAFE_FIELDS.split(","))
+        self.assertTrue({"summary", "event", "http_method", "http_route", "http_status", "request_body",
+                         "response_body", "request_body_complete", "response_body_complete", "error_type",
+                         "ai_operation", "ai_model", "ai_input_tokens", "ai_output_tokens",
+                         "ai_reasoning_tokens", "ai_usage_available", "trace_id", "span_id"} <= fields)
+        self.assertTrue({"message", "error.message", "error.stack_trace", "password", "authorization"}.isdisjoint(fields))
+        self.assertNotIn("SYNTHETIC_", json.dumps(result))
 
     def test_mutated_artifact_rejected_on_every_prepare(self):
         runtime.prepare("rag", "1.1.6", **self.inputs)

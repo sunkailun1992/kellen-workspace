@@ -22,7 +22,16 @@ SERVICES = {
     "mcp": "com.kellen.McpApplication", "message": "com.kellen.MessageApplication",
     "report": "com.kellen.ReportApplication",
 }
-SAFE_FIELDS = "@timestamp,log,log.level,service,service.name,service.version,service.environment,event,event.action,duration_ms,error_code,trace_id,span_id"
+SAFE_FIELDS = ",".join((
+    "@timestamp", "log", "log.level", "service", "service.name", "service.version", "service.environment",
+    "event", "summary", "duration_ms", "outcome", "stage", "error_type", "error_code", "trace_id", "span_id",
+    "http_method", "http_route", "http_status", "request_bytes", "response_bytes", "request_body", "response_body",
+    "request_body_complete", "response_body_complete", "request_body_omitted", "response_body_omitted",
+    "ai_operation", "ai_provider", "ai_model", "ai_response_model", "ai_prompt_key", "ai_prompt_version",
+    "ai_prompt_source", "ai_input_tokens", "ai_output_tokens", "ai_reasoning_tokens", "ai_usage_available",
+    "ai_reasoning_kind", "ai_reasoning_present", "ai_input_summary", "ai_output_summary",
+    "ai_finish_reason", "ai_input_characters", "ai_output_characters", "ai_message_count", "ai_document_count",
+))
 CONTROLLED_ENV_PREFIXES = ("OTEL_", "MANAGEMENT_SERVER_", "LOGGING_", "GITHUB_")
 CONTROLLED_ENV_NAMES = {"JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS", "APP_ENV",
                         "SECURITY_ACTUATOR_TOKEN", "SPRING_APPLICATION_VERSION", "SPRING_APPLICATION_JSON",
@@ -125,7 +134,7 @@ def controlled_environment(environment):
 
 def managed_property(name):
     normalized = re.sub(r"[^a-z0-9]", "", name.lower())
-    return normalized.startswith(("otel", "management", "securityactuator", "logging", "github", "appenv",
+    return normalized.startswith(("otel", "management", "securityactuator", "logging", "github", "appenv", "fleetobservability",
                                   "springapplicationversion", "springapplicationname", "springapplicationjson",
                                   "springconfig", "springprofiles"))
 
@@ -217,7 +226,7 @@ def runtime_inputs(runtime_env, dev_env):
     if not environment.get("GITHUB_ACTUATOR_TOKEN") or environment.get("GITHUB_NACOS_DEV_NAMESPACE", "github-dev") != "github-dev":
         raise ValueError("personal namespace or actuator token invalid")
     agent = verified_jar("OTEL_JAVAAGENT_PATH", "OTEL_JAVAAGENT_SHA256", "2.33.1", environment)
-    privacy = verified_jar("FLEET_PRIVACY_EXTENSION_PATH", "FLEET_PRIVACY_EXTENSION_SHA256", "0.1.0", environment)
+    privacy = verified_jar("FLEET_PRIVACY_EXTENSION_PATH", "FLEET_PRIVACY_EXTENSION_SHA256", "0.1.1", environment)
     endpoint = urlsplit(environment["OTEL_EXPORTER_OTLP_ENDPOINT"])
     if endpoint.scheme not in {"http", "https"} or not endpoint.hostname or endpoint.username or endpoint.password or endpoint.query or endpoint.fragment:
         raise ValueError("collector endpoint invalid")
@@ -324,7 +333,11 @@ def prepare(service, version, runtime_env, dev_env, state_dir, write=True):
                 "logging.structured.json.include": SAFE_FIELDS,
                 "logging.logback.rollingpolicy.max-file-size": "10MB",
                 "logging.logback.rollingpolicy.max-history": "3",
-                "logging.logback.rollingpolicy.total-size-cap": "40MB"})
+                "logging.logback.rollingpolicy.total-size-cap": "40MB",
+                "fleet.observability.enabled": "true",
+                "fleet.observability.max-body-bytes": "8192",
+                "fleet.observability.max-ai-content-characters": "2048",
+                "fleet.observability.ai-content-enabled": "false"})
     if service in {"gateway", "ai-agent"}:
         address = ipaddress.ip_address(environment["FLEET_MANAGEMENT_BIND_ADDRESS"])
         if not address.is_private or address.is_unspecified or address.is_loopback:
@@ -338,8 +351,8 @@ def prepare(service, version, runtime_env, dev_env, state_dir, write=True):
                  "otel.exporter.otlp.headers": environment.get("OTEL_EXPORTER_OTLP_HEADERS", ""),
                  "otel.traces.exporter": "otlp", "otel.metrics.exporter": "none", "otel.logs.exporter": "none",
                  "otel.propagators": "tracecontext", "otel.span.event.count.limit": "0",
-                 "otel.traces.sampler": "traceidratio" if service == "gateway" else "parentbased_traceidratio",
-                 "otel.traces.sampler.arg": environment.get("FLEET_TRACE_RATIO", "0.1"),
+                 # 本入口限定个人github-dev；不让远端sampled=0或旧比例静默丢请求。
+                 "otel.traces.sampler": "always_on",
                  "otel.bsp.max.queue.size": "256", "otel.bsp.max.export.batch.size": "32",
                  "otel.exporter.otlp.timeout": "1000"}
     agent_config, app_config = directory / "agent.properties", directory / "application.properties"
