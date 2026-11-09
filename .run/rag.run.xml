@@ -3,7 +3,7 @@
     <ExternalSystemSettings>
       <option name="externalProjectPath" value="$PROJECT_DIR$" />
       <option name="externalSystemIdString" value="GRADLE" />
-      <option name="scriptParameters" value="" />
+      <option name="scriptParameters" value="--init-script &quot;$PROJECT_DIR$/scripts/observability.init.gradle&quot;" />
       <option name="taskDescriptions"><list /></option>
       <option name="taskNames"><list><option value=":rag:bootRun" /></list></option>
       <option name="vmOptions" value="" />

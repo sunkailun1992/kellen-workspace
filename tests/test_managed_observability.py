@@ -1,5 +1,6 @@
 """托管启动边界：不停止同名外部 JVM，不执行私有 env 中的 shell 内容。"""
 import importlib.util
+import sys
 import hashlib
 import os
 from pathlib import Path
@@ -9,12 +10,28 @@ import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
 spec = importlib.util.spec_from_file_location("managed", ROOT / "scripts/manage-observed.py")
 managed = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(managed)
 
 
 class ManagedObservabilityTest(unittest.TestCase):
+    def test_full_preflight_failure_preserves_existing_jvm(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            bootstrap = root / "ai-agent/config/application-dev.properties"
+            bootstrap.parent.mkdir(parents=True)
+            bootstrap.write_text("GITHUB_NACOS_DEV_NAMESPACE=github-dev\n")
+            args = SimpleNamespace(service="ai-agent", replace_pid=123, timeout=1)
+            environment = {"GITHUB_ACTUATOR_TOKEN": "synthetic", "FLEET_MANAGEMENT_BIND_ADDRESS": "10.0.0.9"}
+            with patch.object(managed, "ROOT", root), patch.object(managed, "listener", return_value=[]), \
+                    patch.object(managed, "launch_preflight", side_effect=ValueError("rejected full runtime")), \
+                    patch.object(managed, "stop_owned") as stop:
+                with self.assertRaises(ValueError):
+                    managed.service_start(args, environment, root / "state")
+                stop.assert_not_called()
+
     def test_foreign_owner_environment_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "runtime.env"
@@ -68,6 +85,7 @@ class ManagedObservabilityTest(unittest.TestCase):
             with patch.object(managed, "ROOT", root), \
                     patch.object(managed.subprocess, "run", return_value=SimpleNamespace(returncode=0)), \
                     patch.object(managed.subprocess, "Popen", return_value=child), \
+                    patch.object(managed, "launch_preflight"), \
                     patch.object(managed, "stop_owned"), \
                     patch.object(managed, "owned_service", return_value=True), \
                     patch.object(managed, "listener", side_effect=listeners), \

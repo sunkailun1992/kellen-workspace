@@ -10,37 +10,78 @@
 | Java服务（9） | `gateway`、`user`、`ai-agent`、`ai`、`ai-memory`、`rag`、`mcp`、`message`、`report` |
 | Web前端（1） | `admin-web` |
 
-## 可选观测启动
+## IDEA、Gradle与服务器Jar观测启动
 
-全体系观测使用 OTel Java agent，启动前从官方 `opentelemetry-java-instrumentation` 的固定 release `v2.33.1` 获取 agent 和官方 SHA-256 校验值；将文件保存在 Git 外。还必须按 `utils/ops/github-dev/observability/agent-extension/README.md` 构建 0.1.0 隐私扩展，提供 `FLEET_PRIVACY_EXTENSION_PATH` 与 `FLEET_PRIVACY_EXTENSION_SHA256`；两者缺失时拒绝启用。`OTEL_JAVAAGENT_PATH`、`OTEL_JAVAAGENT_SHA256`、`OTEL_EXPORTER_OTLP_ENDPOINT` 由私有环境提供，若 Collector 要求认证，再提供 `OTEL_EXPORTER_OTLP_HEADERS`；不要把凭据写在命令行或提交到仓库。
+三种启动入口共用 `scripts/observability_runtime.py` 的完整 preflight：固定官方 OTel Java agent `2.33.1` 的 SHA-256/版本，以及本地构建隐私扩展 `0.1.0` 的 SHA-256/兼容版本；任一缺失、摘要或版本不符均在服务 JVM 启动前拒绝。仅给选定服务挂 agent，不使用全局 `JAVA_TOOL_OPTIONS`，不影响 Gradle daemon、编译器和测试 JVM。
+
+先按 `utils/ops/github-dev/observability/agent-extension/README.md` 准备两个 Git 外制品。私有 runtime env 提供 `OTEL_JAVAAGENT_PATH`、`OTEL_JAVAAGENT_SHA256`、`FLEET_PRIVACY_EXTENSION_PATH`、`FLEET_PRIVACY_EXTENSION_SHA256`、`OTEL_EXPORTER_OTLP_ENDPOINT` 和需要的 `OTEL_EXPORTER_OTLP_HEADERS`；私有 dev env 提供既有 `GITHUB_*` 配置及 `GITHUB_ACTUATOR_TOKEN`。两文件必须由当前用户持有、0600、非 symlink，内容按简单 env 格式解析，不执行 shell。
+
+gateway、ai-agent 的独立管理端口为 `17100`、`17310`。私有 runtime env 必须显式提供 `FLEET_MANAGEMENT_BIND_ADDRESS`，与 NAS Prometheus 目标一致，仅接受明确私网地址；不从 OTLP 出站路由猜入站网卡，不默认绑定所有接口。其它服务沿用受保护 Actuator 入口。
+
+### 一次配置本机私有引用
+
+```bash
+python3 scripts/prepare-observed.py configure \
+  --runtime-env /secure/observability.env --dev-env /secure/github-dev.env
+```
+
+该命令只在被忽略的 `build/observability-runtime/launch.json` 保存原私有文件的路径引用。每次启动再读原文件、重验制品，生成 0700 目录中的 0600 `agent.properties` 与 `application.properties`。OTLP header、运维令牌和配置地址等实际值只在这些受限文件，不进入源码、IDE XML、命令行或回执。自定义 `--state-dir` 必须位于 Git 工作树外或被明确 ignore；可跟踪路径会在写入前拒绝。新 clone 未配置私有绑定仍可编译/测试；使用观测入口 `bootRun` 会明确拒绝，不会静默退成无观测启动。
+
+### IDEA原生Application与共享Gradle入口
+
+已有 `GatewayApplication`、`AiAgentApplication` 等原生 Spring Boot/Application 配置可受限迁移：
+
+```bash
+python3 scripts/configure-idea-observed.py \
+  --runtime-env /secure/observability.env --dev-env /secure/github-dev.env --dry-run
+python3 scripts/configure-idea-observed.py \
+  --runtime-env /secure/observability.env --dev-env /secure/github-dev.env \
+  --expected-sha256 <本次dry-run的source_sha256>
+```
+
+工具仅匹配清单中的9个主类、对应模块和已核个人 GitHub origin；其它配置保留，冲突 VM/业务参数或环境变量会拒绝迁移并保留原文件。全部候选通过后，按原 XML SHA 做 CAS、留受限备份，再更新本机忽略的 `.idea/workspace.xml`。IDE XML 只引用 agent 与两个配置文件的路径，并添加每次 Run/Debug 前的 `prepareObserved*` Gradle 任务；该任务重新校验制品、刷新配置、拒绝后加的观测覆盖参数。普通 `-Xmx` 和 JDWP 调试参数保留。
+
+IDEA 已打开时，需要 Reload All from Disk 并核对运行配置的 VM options、Before launch 中的 Gradle preflight；若 IDE 内存仍保留旧配置，先保存并关闭对应工作区，再重新 dry-run/CAS 迁移后打开。脚本写入成功不表示 IDEA 内存刷新或真实 Run 已验收。后来新建的原生 Application 配置需要重新执行迁移，不能从“主类相同”推定已挂 agent。
+
+`.run/`中现有9个共享 Gradle 入口已显式带 `--init-script scripts/observability.init.gradle`，名称和 `:服务:bootRun` 任务保持。命令行可用：
 
 ```bash
 python3 scripts/run-observed.py rag --dry-run
 python3 scripts/run-observed.py rag
+# 等价的显式 Gradle 入口：
+./gradlew --init-script scripts/observability.init.gradle :rag:bootRun
 ```
 
-启动器校验清单、固定官方 agent 2.33.1 的 SHA-256/版本与扩展 0.1.0 的本地构建 SHA-256/兼容版本，仅向选中服务的 `bootRun` JVM 注入 agent、`OTEL_JAVAAGENT_EXTENSIONS` 与 events=0，不设置全局 `JAVA_TOOL_OPTIONS`。gateway、ai-agent 默认管理端口分别为17100、17310且仅绑定loopback；从NAS抓取前必须显式设置私网绑定并验证 `actuatorReq` 令牌保护。其它服务沿用已有受保护Actuator入口。
+标准 `gradlew` 未修改；裸 `./gradlew :rag:bootRun` 不会自动加载观测 init，不能把它当作已经接入。共享入口的 preflight 在真正执行 `bootRun` 时运行，模型导入/编译不会读秘密或启动服务。已有 `task.jvmArgs`、`--args` 与继承环境中会覆盖 OTLP、日志、管理端口、版本或附加配置的内容按同一合同拒绝/清理，避免旧参数让接入失效。
 
-服务 JVM 从所选项目的 `project.version` 同时设置 `SPRING_APPLICATION_VERSION` 与 OTel `service.version`，使 Boot ECS 日志和链路使用同一制品版本；共享模板固定环境为 `github-dev`。Jar/IDE 入口需按观测部署说明先校验两个 Jar 并显式注入相同版本和隐私扩展，缺值日志显示 `unknown`。
+### 服务器Jar入口
 
-公共配置和极空间独立编排位于 `utils/ops/github-dev/observability/`。Java运行在Mac时，NAS不能直接读取Mac日志；应在应用主机运行文件采集器，或复用已有安全采集通道。控制台成功不代表ES已采集、Jaeger可查询或目标实例已启用。
+服务器可部署 `scripts/run-observed-jar.py`、`scripts/observability_runtime.py` 与业务 Boot Jar，无需 Gradle。配置仍由服务器自己的受限私有 env 提供：
+
+```bash
+python3 scripts/run-observed-jar.py rag /deploy/rag.jar \
+  --runtime-env /secure/observability.env --dev-env /secure/github-dev.env \
+  --state-dir /secure/observability-runtime --dry-run
+# 去掉 --dry-run 后以 exec 启动真正的 java -jar。
+```
+
+Jar 的 `Start-Class` 必须匹配声明服务，`Implementation-Version` 必须存在；日志与 trace 使用同一版本。dry-run 做完整输入检查、不写文件、不启动 JVM。业务参数可放在 `--` 后，但覆盖受控日志、管理入口、版本、Spring 配置来源或 OTel 的参数会在 JVM 前拒绝。服务器路径和凭据不从本机复制，按目标环境提供；当前入口限定个人 `github-dev`，不隐式切换公司或其它环境。
 
 ### 本机受控切换与日志采集
 
-`scripts/manage-observed.py`复用上述观测启动器和workspace composite，不要求先发布远端Git或Maven。启动前须在个人`github-dev`配置中心准备匹配的`actuator.yaml`与metadata-only `logging.yml`，并保留各服务根目录的私有`config/application-dev.properties`。现有服务需逐个切换，不能关闭IDE本身或按进程名批量终止Java。
-
-私有runtime env必须是当前用户受限普通文件（0600，非symlink），包含固定agent/隐私扩展的路径及摘要、`OTEL_EXPORTER_OTLP_ENDPOINT`、`OTEL_EXPORTER_OTLP_HEADERS`、`FLEET_OTLP_TOKEN`。可再配置`FLEET_COLLECTOR_PATH`和`FLEET_COLLECTOR_SHA256`，指向项目任务缓存中经官方release摘要验证的`otelcol-contrib 0.164.0`本机二进制。启动器不执行env内容，不把凭据加入命令行，也不设置全局`JAVA_TOOL_OPTIONS`；业务dev配置仍从既有私有文件和服务根目录读取。
+`scripts/manage-observed.py`用于现有进程的受控替换，不要求先发布远端 Git/Maven。它会先配置私有绑定、完成全部 prepare 和 dry-run，再核对个人 checkout classpath、服务主类、业务/管理端口归属，只对明确选中的旧 PID 发 TERM；超时不强杀。任一 preflight 失败保留旧 JVM。新进程必须通过 health、正确令牌 metrics、无/错令牌拒绝，才记为 verified。
 
 ```bash
 python3 scripts/manage-observed.py collector-start --runtime-env /secure/observability.env
-python3 scripts/manage-observed.py start user --replace-pid <已核个人JVM的PID> --runtime-env /secure/observability.env
+python3 scripts/manage-observed.py start user --replace-pid <已核个人JVM的PID> \
+  --runtime-env /secure/observability.env --dev-env /secure/github-dev.env
 ```
 
-替换前同时校验PID的个人checkout classpath、服务主类和监听端口，只向该JVM发送TERM；超时不强杀。新进程必须通过应用health、带令牌metrics以及无/错令牌拒绝检查，才记为verified。gateway/ai-agent的health与metrics迁到独立管理端口；必须在私有runtime env显式提供与NAS Prometheus目标一致的`FLEET_MANAGEMENT_BIND_ADDRESS`，不从OTLP出站路由猜入站网卡。业务端口另外验证监听JVM归属。默认`build/observability-runtime/`保存受限PID回执、尝试历史和诊断日志，`logs/`只写白名单ECS JSON；单服务轮转上限10MB、保留3期、总上限40MB。Collector只采集该目录，使用仓库原生`collector-agent.yaml`、有限异步队列和固定官方二进制，不安装全局工具；它自身的数值遥测只绑定`127.0.0.1:18888`，不占用既有8888进程。退出工具后服务继续运行；此入口不是操作系统开机自启或自动重启守护程序。
+Java 文件日志写入所选 state 目录下的 `logs/`，Boot ECS 仅保留元数据白名单；单服务轮转10MB、保留3期、总上限40MB。不要同步写 NAS 远程文件。Java 在 Mac 运行时，NAS Collector 无法直接读取 Mac 日志，应用主机也需运行文件 Collector；服务器同样复用当地采集器并让 `FLEET_LOG_DIR` 指向所选 state 的 `logs/`。本机入口支持固定官方 `otelcol-contrib 0.164.0`，私有 env 提供 `FLEET_COLLECTOR_PATH`、`FLEET_COLLECTOR_SHA256`、`FLEET_OTLP_TOKEN`；本机数值遥测仅绑定 `127.0.0.1:18888`，不占用现有8888进程。不会自动安装工具、数据库或中间件。
 
-该入口的成功回执只证明本机进程和管理边界。NAS Prometheus目标UP、ES真实安全日志、Jaeger链路和告警通知仍须分别验收；Collector启动成功不能替代日志送达。
+共享 `logging.yml` 固定环境 `github-dev`；prepare 同时设置应用版本和 OTel resource 版本，禁用原始异常 events、重复 metrics/log exporter，并加载隐私扩展。独立管理端口会迁走 health/metrics，业务端口另外核监听 JVM 归属。启动进程不是操作系统自启/守护程序；文件存在、编译成功、IDE配置写入、服务启动、NAS目标UP、ES入库和Jaeger链路需分别验收。
 
-本机访问自身私网地址可能被本机路由/网络策略阻断，即使NAS已经成功抓取。验证超时会保留新JVM和诊断回执，不自动回滚或杀进程；先从NAS分别核health、正确/错误令牌和Prometheus目标，再决定是否重试。外部验收证据与本机超时分开保存，不能把本机探测失败直接解释为服务未启动。
+本机访问自身私网地址可能被本机路由/网络策略阻断，即使 NAS 已成功抓取。托管验证超时会保留新 JVM 和诊断回执，不自动回滚或杀进程；先从 NAS 核 health、令牌边界和目标状态，再决定是否重试。
 
 ## 环境要求
 
@@ -119,7 +160,7 @@ FF合并同时使用`--no-overwrite-ignore`：若远端开始跟踪与本机igno
 
 `idea.sh`生成本机忽略的`.idea/vcs.xml`，为总仓和12个子仓按真实目录保留唯一Git映射。复用symlink时与Gradle导入路径一致，清理同一仓库的链接路径、真实路径和重复条目，避免分支菜单出现两组仓库；不相关的自定义映射和非Git配置保留。运行脚本后可在IDEA版本控制设置中确认这些独立仓库。
 
-`.run/`提供9个服务的共享Gradle `bootRun`入口；入口通过根构建调用`:服务名:bootRun`，每个服务的工作目录为自己的项目目录。启动前，按子项目说明准备本机配置和所需外部服务。本仓库不提供真实凭据，也不自动启动数据库、中间件或业务服务。
+`.run/`提供9个服务的共享Gradle观测入口，通过显式init与根构建调用`:服务名:bootRun`，每个服务的工作目录为自己的项目目录；先按上文准备本机私有观测绑定。原生Application入口按上文受限迁移。本仓库不提供真实凭据，也不自动启动数据库、中间件或业务服务。
 
 `idea.sh`同时为清单中的Web前端生成本机忽略的`.idea/workspace-web/admin-web.iml`，并将它合并进`.idea/modules.xml`。前端作为独立`WEB_MODULE`出现在Project树，新建内容根使用复用目录的真实绝对`file://`路径，排除`node_modules`、`dist`和`coverage`；真实路径只写入被忽略的本机配置。旧版受管`.iml`中的`$PROJECT_DIR$`内容根及其下URL会迁移为绝对路径，避免IDEA未展开宏导致`Watch roots should be absolute`；IDE自身改写的等价`$MODULE_DIR$`和绝对路径保留。已有Java/自定义模块、用户设置及已登记的同目录Web模块保留；重复执行幂等，`--dry-run`不写文件，损坏XML或输出symlink会停止并保留原文件。
 

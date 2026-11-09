@@ -1,38 +1,46 @@
-// 仅为指定服务的bootRun配置agent；不触碰Gradle daemon、测试、编译器或其它服务。
+// 所有入口共用运行前校验；只配置服务 bootRun，不给 Gradle、编译器或测试 JVM 挂 agent。
+import groovy.json.JsonSlurper
+
 def observedService = System.getenv('FLEET_OBSERVABILITY_SERVICE')
+def workspaceRoot = initscript.sourceFile.parentFile.parentFile.canonicalFile
+def services = new JsonSlurper().parse(new File(workspaceRoot, 'repos.json')).repositories
+        .findAll { it.kind == 'java-service' }*.name.toSet()
+def managedProperty = { raw ->
+    def normalized = raw.toLowerCase(Locale.ROOT).replaceAll('[^a-z0-9]', '')
+    ['otel', 'management', 'securityactuator', 'logging', 'github', 'appenv', 'springapplicationversion',
+     'springapplicationname', 'springapplicationjson', 'springconfig', 'springprofiles'].any { normalized.startsWith(it) }
+}
 gradle.beforeProject { project ->
-    if (project.name == observedService) {
+    if (services.contains(project.name) && (!observedService || project.name == observedService)) {
         project.tasks.withType(JavaExec).configureEach { task ->
             if (task.name == 'bootRun') {
-                def agent = System.getenv('OTEL_JAVAAGENT_PATH')
-                if (!agent || !new File(agent).isFile()) {
-                    throw new GradleException('观测agent文件缺失；使用run-observed.py验证摘要后启动。')
-                }
-                def privacy = System.getenv('FLEET_PRIVACY_EXTENSION_PATH')
-                if (!privacy || !new File(privacy).isFile()) {
-                    throw new GradleException('隐私扩展缺失；使用run-observed.py验证两个固定Jar摘要后启动。')
-                }
-                task.jvmArgs("-javaagent:${agent}")
-                task.environment('OTEL_JAVAAGENT_EXTENSIONS', privacy)
-                task.environment('OTEL_SPAN_EVENT_COUNT_LIMIT', '0')
-                task.environment('OTEL_SERVICE_NAME', project.name)
-                // Boot ECS 读取应用版本；只设置服务进程，与 OTel service.version 同源。
-                task.environment('SPRING_APPLICATION_VERSION', project.version.toString())
-                task.environment('OTEL_RESOURCE_ATTRIBUTES', "service.version=${project.version},deployment.environment.name=github-dev")
-                task.environment('OTEL_EXPORTER_OTLP_PROTOCOL', 'http/protobuf')
-                task.environment('OTEL_METRICS_EXPORTER', 'none')
-                task.environment('OTEL_LOGS_EXPORTER', 'none')
-                task.environment('OTEL_PROPAGATORS', 'tracecontext')
-                // 公网入口不由客户端sampled标志强制全采；内部服务跟随上游。
-                task.environment('OTEL_TRACES_SAMPLER', project.name == 'gateway' ? 'traceidratio' : 'parentbased_traceidratio')
-                task.environment('OTEL_TRACES_SAMPLER_ARG', System.getenv('FLEET_TRACE_RATIO') ?: '0.1')
-                task.environment('OTEL_BSP_MAX_QUEUE_SIZE', '256')
-                task.environment('OTEL_BSP_MAX_EXPORT_BATCH_SIZE', '32')
-                task.environment('OTEL_EXPORTER_OTLP_TIMEOUT', '1000')
-                if (project.name == 'gateway' || project.name == 'ai-agent') {
-                    task.environment('MANAGEMENT_SERVER_PORT', System.getenv('MANAGEMENT_SERVER_PORT') ?: (project.name == 'gateway' ? '17100' : '17310'))
-                    // 跨主机采集时显式覆盖为私网绑定；默认本机，避免意外公网暴露。
-                    task.environment('MANAGEMENT_SERVER_ADDRESS', System.getenv('MANAGEMENT_SERVER_ADDRESS') ?: '127.0.0.1')
+                // 每次执行都校验官方 agent 与扩展的 SHA/版本；导入模型和编译不读取秘密。
+                task.doFirst {
+                    // Gradle 8.14 的 allJvmArgs 在 doFirst 尚未合并 jvmArguments/providers。
+                    def configuredJvm = task.allJvmArgs + (task.jvmArgs ?: []) + task.jvmArguments.getOrElse([])
+                    configuredJvm += task.jvmArgumentProviders.collectMany { it.asArguments().toList() }
+                    def configuredArgs = task.args + task.argumentProviders.collectMany { it.asArguments().toList() }
+                    if (configuredJvm.any { argument ->
+                        argument.startsWith('-javaagent:') ||
+                                (argument.startsWith('-D') && managedProperty(argument.substring(2).split('=', 2)[0]))
+                    } || task.systemProperties.keySet().any { managedProperty(it) }
+                            || configuredArgs.any { argument -> argument.startsWith('--') && managedProperty(argument.substring(2).split('=', 2)[0]) }) {
+                        throw new GradleException('既有 JVM/业务参数覆盖受控观测配置；保留用户设置并拒绝启动，私有值省略。')
+                    }
+                    def command = ['python3', new File(workspaceRoot, 'scripts/prepare-observed.py').path,
+                                   'prepare', project.name, '--version', project.version.toString()]
+                    def process = new ProcessBuilder(command).directory(workspaceRoot).start()
+                    def output = process.inputStream.getText('UTF-8')
+                    process.errorStream.close()
+                    if (process.waitFor() != 0) {
+                        throw new GradleException('观测启动前校验失败；先配置受限 launch binding，私有值省略。')
+                    }
+                    def receipt = new JsonSlurper().parseText(output)
+                    // 秘密仅在 0600 properties 内。旧 shell 的环境不得覆盖这次私有配置。
+                    task.environment.keySet().findAll { key ->
+                        managedProperty(key) || key in ['JAVA_TOOL_OPTIONS', 'JDK_JAVA_OPTIONS', '_JAVA_OPTIONS']
+                    }.each { task.environment.remove(it) }
+                    task.jvmArgs(receipt.jvm_arguments)
                 }
             }
         }

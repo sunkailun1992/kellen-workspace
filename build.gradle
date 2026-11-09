@@ -5,6 +5,17 @@ plugins {
 
 def javaRepositories = gradle.ext.workspaceJavaRepositories
 
+// IDEA 原生 Application 的 Before Run 使用此入口；仅准备配置，不启动或终止 JVM。
+javaRepositories.findAll { it.kind == 'java-service' }.each { repo ->
+    def suffix = repo.name.split('-').collect { it.capitalize() }.join('')
+    tasks.register("prepareObserved${suffix}", Exec) {
+        group = 'application'
+        description = "校验 ${repo.name} 观测制品并刷新本机私有配置。"
+        workingDir(rootDir)
+        commandLine('python3', new File(rootDir, 'scripts/prepare-observed.py').path, 'prepare', repo.name, '--check-idea')
+    }
+}
+
 // 保留曾经复用的移动端目录，但不将其加入根模块的 IDEA 内容模型。
 def excludedMobile = file('ai-wechat-mini-programs')
 def activeRoots = gradle.ext.workspaceRepositories.collect { file(it.name).canonicalFile }.toSet()

@@ -27,6 +27,8 @@ class RunConfigurationTests(unittest.TestCase):
             options = {e.attrib["name"]: e for e in settings.findall("option")}
             self.assertEqual(options["externalProjectPath"].attrib["value"], "$PROJECT_DIR$")
             self.assertEqual(options["externalSystemIdString"].attrib["value"], "GRADLE")
+            self.assertEqual(options["scriptParameters"].attrib["value"],
+                             '--init-script "$PROJECT_DIR$/scripts/observability.init.gradle"')
             tasks = options["taskNames"].findall("./list/option")
             self.assertEqual(len(tasks), 1)
             actual[tasks[0].attrib["value"]] = path.name
@@ -39,36 +41,46 @@ class CompositeIntegrationTests(unittest.TestCase):
     def test_observability_only_changes_selected_service_runtime(self):
         self.create_builds()
         shutil.copy2(ROOT / 'scripts/observability.init.gradle', self.root / 'scripts/observability.init.gradle')
-        agent = self.root / 'fixture agent.jar'
-        agent.write_bytes(b'not executed')
-        privacy = self.root / 'fixture privacy.jar'
-        privacy.write_bytes(b'not executed')
         with (self.root / 'rag/build.gradle').open('a') as stream:
             stream.write("""
 tasks.register('assertObservedRuntime') {
     doLast {
         def runtime = tasks.named('bootRun').get()
-        assert runtime.jvmArgs.findAll { it.startsWith('-javaagent:') }.size() == 1
-        assert runtime.environment.OTEL_SERVICE_NAME == 'rag'
-        assert runtime.environment.SPRING_APPLICATION_VERSION == '1.0'
-        assert runtime.environment.OTEL_RESOURCE_ATTRIBUTES == 'service.version=1.0,deployment.environment.name=github-dev'
-        assert runtime.environment.OTEL_METRICS_EXPORTER == 'none'
-        assert runtime.environment.OTEL_SPAN_EVENT_COUNT_LIMIT == '0'
-        assert runtime.environment.OTEL_JAVAAGENT_EXTENSIONS.endsWith('fixture privacy.jar')
-        assert !System.getenv('OTEL_JAVAAGENT_EXTENSIONS')
+        assert !runtime.jvmArgs.any { it.startsWith('-javaagent:') }
+        assert runtime.actions.size() > tasks.named('plainJava').get().actions.size()
         assert !tasks.named('test').get().jvmArgs.any { it.startsWith('-javaagent:') }
-        println 'OBSERVED runtime only'
+        println 'OBSERVED preflight deferred until runtime only'
     }
 }
+tasks.register('plainJava', JavaExec)
 """)
-        environment = dict(os.environ, FLEET_OBSERVABILITY_SERVICE='rag', OTEL_JAVAAGENT_PATH=str(agent),
-                           FLEET_PRIVACY_EXTENSION_PATH=str(privacy))
+        environment = dict(os.environ, FLEET_OBSERVABILITY_SERVICE='rag')
         result = subprocess.run([str(self.root / 'gradlew'), '--offline', '--console=plain',
                                  '--init-script', str(self.root / 'scripts/observability.init.gradle'),
                                  ':rag:assertObservedRuntime'], cwd=self.root, env=environment,
                                 text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=240)
         self.assertEqual(result.returncode, 0, result.stdout)
-        self.assertIn('OBSERVED runtime only', result.stdout)
+        self.assertIn('OBSERVED preflight deferred until runtime only', result.stdout)
+
+    def test_observability_rejects_gradle_overrides_before_starting_jvm(self):
+        self.create_builds()
+        shutil.copy2(ROOT / 'scripts/observability.init.gradle', self.root / 'scripts/observability.init.gradle')
+        build = self.root / 'rag/build.gradle'
+        original = build.read_text()
+        for index, addition in enumerate(("args '--logging.structured.json.include=SYNTHETIC_PRIVATE_OVERRIDE'",
+                         "jvmArgs '-javaagent:/SYNTHETIC_PRIVATE_OVERRIDE.jar'",
+                         "jvmArgs '-Dsecurity.actuator.token=SYNTHETIC_PRIVATE_OVERRIDE'")):
+            build.write_text(original + "\ntasks.named('bootRun') { " + addition + " }\n")
+            result = self.gradle('-I', 'scripts/observability.init.gradle', ':rag:bootRun')
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('既有 JVM/业务参数覆盖受控观测配置', result.stdout, f'override case {index}')
+            self.assertNotIn('SYNTHETIC_PRIVATE_OVERRIDE', result.stdout)
+        build.write_text(original + "\ntasks.named('bootRun') { jvmArgs '-Xmx64m', '-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=127.0.0.1:0'; args '--business.fixture=ok' }\n")
+        result = self.gradle('-I', 'scripts/observability.init.gradle', ':rag:bootRun')
+        self.assertNotEqual(result.returncode, 0)
+        # 普通业务/调试参数通过冲突门禁，但缺私有 binding 必须在 JVM 前明确失败。
+        self.assertIn('观测启动前校验失败', result.stdout)
+        self.assertNotIn('既有 JVM/业务参数覆盖受控观测配置', result.stdout)
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="workspace 空格 ")

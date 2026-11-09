@@ -14,6 +14,8 @@ import urllib.error
 import urllib.request
 from urllib.parse import urlsplit
 
+from observability_runtime import checkout_version, configure_binding, prepare
+
 ROOT = Path(__file__).resolve().parents[1]
 SERVICES = {
     "user": (7500, "com.kellen.UserApplication"),
@@ -131,15 +133,16 @@ def service_start(args, environment, state):
             raise ValueError("management interface must be an explicit private address")
         environment.update(MANAGEMENT_SERVER_ADDRESS=management_host, MANAGEMENT_SERVER_PORT=str(management_port))
     command = [sys.executable, str(ROOT / "scripts/run-observed.py"), service]
-    # 在停止旧 JVM 前验证所有 agent/extension 摘要，失败则保留旧进程。
-    check = subprocess.run(command + ["--dry-run"], env=environment, capture_output=True)
-    if check.returncode:
-        raise ValueError("observed launcher preflight rejected runtime artifacts")
     if management_port != SERVICES[service][0]:
         occupied = listener(management_port)
         # 管理口被其它进程占用时保留旧 JVM；共享令牌不能证明响应者就是本次服务。
         if occupied and occupied != [args.replace_pid]:
             raise ValueError("management port belongs to a different process; old JVM preserved")
+    # 完整准备必须在停止旧 JVM 前完成，不能仅校验环境中的 Jar 后让实际启动缺 binding。
+    launch_preflight(args, state, service)
+    check = subprocess.run(command + ["--dry-run"], env=environment, capture_output=True)
+    if check.returncode:
+        raise ValueError("observed launcher preflight rejected runtime configuration")
     if args.replace_pid:
         stop_owned(args.replace_pid, service)
     elif listener(SERVICES[service][0]):
@@ -182,6 +185,11 @@ def service_start(args, environment, state):
                   verification_scope="local client only; keep JVM running and check NAS before retrying a private bind")
     write_record(state / f"{service}.json", record)
     raise TimeoutError("service verification timed out; private logs retained")
+
+
+def launch_preflight(args, state, service):
+    configure_binding(args.runtime_env, args.dev_env, state, root=ROOT)
+    prepare(service, checkout_version(service, ROOT), args.runtime_env, args.dev_env, state)
 
 
 def collector_start(environment, state):
