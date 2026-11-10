@@ -67,7 +67,11 @@ python3 scripts/run-observed-jar.py rag /deploy/rag.jar \
 # 去掉 --dry-run 后以 exec 启动真正的 java -jar。
 ```
 
-Jar 的 `Start-Class` 必须匹配声明服务，`Implementation-Version` 必须存在；日志与 trace 使用同一版本。dry-run 做完整输入检查、不写文件、不启动 JVM。业务参数可放在 `--` 后，但覆盖受控日志、管理入口、版本、Spring 配置来源或 OTel 的参数会在 JVM 前拒绝。服务器路径和凭据不从本机复制，按目标环境提供；当前入口限定个人 `github-dev`，不隐式切换公司或其它环境。
+Jar 的 `Start-Class` 必须匹配声明服务，`Implementation-Version` 必须存在；日志与 trace 使用同一版本。dry-run 做完整输入检查、计算业务 Jar SHA-256，不写文件、不启动 JVM。实际启动先校验全部私有输入，再把业务 Jar 复制到所选 state 目录的 `immutable-jars/<service>-<version>-<完整SHA256>.jar`，JVM 只执行该副本。之后重新构建、覆写或删除原 `build/libs` Jar 不会改变运行中 JVM 需要延迟加载的内容。
+
+制品目录为当前用户持有的 0700，完成的独立副本为 0400；不使用硬链接，不覆盖已有制品，也不自动删除旧制品。已有同名副本须重新验证摘要、owner、权限和普通文件身份后才复用。原 Jar 必须是当前用户持有、非 symlink、非硬链接且不可由组或其它用户写入的普通文件；用户持有的父级 symlink 也会拒绝，操作系统的 root 持有路径别名仍按原受管目录规则处理。复制前后会核对源文件身份、大小和时间戳，复制内容另验摘要和 Manifest；并发漂移或目标竞争均在 JVM 启动前拒绝，不自动重试。失败仅移除本轮仍可确认 inode 的未完成副本；突发进程中止留下的未完成文件必须先人工核对，后续启动不会覆盖它。本机制防止后续构建意外覆写，不宣称抵御同一操作系统账号恶意改动。
+
+业务参数可放在 `--` 后，但覆盖受控日志、管理入口、版本、Spring 配置来源或 OTel 的参数会在 JVM 前拒绝。服务器路径和凭据不从本机复制，按目标环境提供；当前入口限定个人 `github-dev`，不隐式切换公司或其它环境。IDEA 原生运行和 `run-observed.py` 的 `bootRun` 开发入口保持各自生命周期，不使用这份 Jar 副本策略。
 
 ### 运维检查与日志采集
 
