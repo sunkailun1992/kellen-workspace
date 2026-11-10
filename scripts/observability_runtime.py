@@ -139,6 +139,7 @@ def controlled_environment(environment, service=None):
 def managed_property(name, service=None):
     normalized = re.sub(r"[^a-z0-9]", "", name.lower())
     return ((service in RPC_PORTS and normalized in RPC_PORT_PROPERTY_NAMES)
+            or (service == "gateway" and normalized == "gatewayobservabilityclientspanenabled")
             or normalized.startswith(("otel", "management", "securityactuator", "logging", "github", "appenv", "fleetobservability",
                                       "springapplicationversion", "springapplicationname", "springapplicationjson",
                                       "springconfig", "springprofiles")))
@@ -365,6 +366,11 @@ def prepare(service, version, runtime_env, dev_env, state_dir, write=True):
                  "otel.traces.sampler": "always_on",
                  "otel.bsp.max.queue.size": "256", "otel.bsp.max.export.batch.size": "32",
                  "otel.exporter.otlp.timeout": "1000"}
+    if service == "gateway":
+        # 精确停用 2.33.1 的 Reactor Netty 客户端模块；不能用 reactor-netty/netty 总开关停掉 SERVER。
+        # 公共 HTTP Instrumenter 与 Reactor bridge 抑制底层重复 CLIENT，接管整段 body 终态。
+        telemetry["otel.instrumentation.reactor-netty-1.0.enabled"] = "false"
+        app["gateway.observability.client-span-enabled"] = "true"
     agent_config, app_config = directory / "agent.properties", directory / "application.properties"
     for path in (agent_config, app_config):
         if path.exists() or path.is_symlink():

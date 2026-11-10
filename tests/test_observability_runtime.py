@@ -157,6 +157,63 @@ class RuntimePreparationTests(unittest.TestCase):
                 self.assertIn("fleet.observability.ai-content-enabled=false\n", app)
                 self.assertIn("logging.structured.json.context.include=false\n", app)
 
+    def test_gateway_owns_complete_http_body_span_without_changing_other_services(self):
+        for service in runtime.SERVICES:
+            with self.subTest(service=service):
+                result = runtime.prepare(service, "1.2.3", **self.inputs)
+                agent = Path(result["agent_config"]).read_text()
+                app = Path(result["app_config"]).read_text()
+                for key in ("otel.instrumentation.reactor-netty.enabled", "otel.instrumentation.netty.enabled",
+                            "otel.instrumentation.spring-webflux.enabled"):
+                    self.assertNotIn(key, agent)
+                if service == "gateway":
+                    self.assertIn("otel.instrumentation.reactor-netty-1.0.enabled=false\n", agent)
+                    self.assertIn("gateway.observability.client-span-enabled=true\n", app)
+                else:
+                    self.assertNotIn("otel.instrumentation.reactor-netty-1.0.enabled", agent)
+                    self.assertNotIn("gateway.observability.client-span-enabled", app)
+
+    def test_gateway_client_span_mode_is_protected_from_all_launch_overrides(self):
+        keys = ("gateway.observability.client-span-enabled", "GATEWAY_OBSERVABILITY_CLIENT_SPAN_ENABLED",
+                "gateway_observability_client_span_enabled")
+        for service in runtime.SERVICES:
+            receipt = runtime.prepare(service, "1.2.3", **self.inputs, write=False)
+            for key in keys:
+                with self.subTest(service=service, key=key):
+                    self.assertEqual(runtime.ide_controlled_env_name(key, receipt), service == "gateway")
+                    if service == "gateway":
+                        with self.assertRaises(ValueError):
+                            runtime.validate_application_args([f"--{key}=false"], service=service)
+                        with self.assertRaises(runtime.RuntimeValidationError):
+                            runtime.validate_idea_application_args([f"--{key}=false"], receipt)
+            clean = runtime.controlled_environment({keys[1]: "false", "PATH": "keep"}, service=service)
+            self.assertEqual(keys[1] in clean, service != "gateway")
+
+    def test_native_gateway_preflight_rejects_client_span_vm_program_and_environment_overrides(self):
+        path = self.create_idea_fixture()
+        _, _, after, _ = idea.candidate(self.root, self.inputs)
+        receipt = runtime.prepare("gateway", "1.2.3", **self.inputs, write=False)
+        with patch.dict(os.environ, {}, clear=True):
+            path.write_bytes(after)
+            runtime.check_idea_runtime("gateway", receipt, self.root)
+            with patch.dict(os.environ, {"GATEWAY_OBSERVABILITY_CLIENT_SPAN_ENABLED": "false"}):
+                with self.assertRaises(runtime.RuntimeValidationError) as error:
+                    runtime.check_idea_runtime("gateway", receipt, self.root)
+                self.assertEqual(error.exception.reason_code, "IDE_ENV_OVERRIDE")
+            for option, suffix, reason in (("VM_PARAMETERS", " -Dgateway.observability.client-span-enabled=false", "IDE_VM_OVERRIDE"),
+                                            ("PROGRAM_PARAMETERS", " --gateway.observability.client-span-enabled=false", "IDE_APPLICATION_ARGS_OVERRIDE")):
+                tree = workspace.parse_idea_xml_bytes(after)
+                config = tree.getroot().find("./component/configuration[@name='gateway']")
+                target = config.find(f"option[@name='{option}']")
+                if target is None:
+                    import xml.etree.ElementTree as ET
+                    target = ET.SubElement(config, "option", name=option, value="")
+                target.set("value", target.get("value", "") + suffix)
+                path.write_bytes(workspace.idea_xml_bytes(tree))
+                with self.assertRaises(runtime.RuntimeValidationError) as error:
+                    runtime.check_idea_runtime("gateway", receipt, self.root)
+                self.assertEqual(error.exception.reason_code, reason)
+
     def test_structured_io_fields_preserve_safe_events_without_raw_messages(self):
         result = runtime.prepare("rag", "1.0.0", **self.inputs)
         fields = set(runtime.SAFE_FIELDS.split(","))

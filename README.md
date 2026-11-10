@@ -83,6 +83,10 @@ Java 文件日志写入所选 state 目录下的 `logs/`，Boot ECS 保留安全
 
 共享 `logging.yml` 固定环境 `github-dev`；prepare 同时设置应用版本和 OTel resource 版本，禁用原始异常 events、重复 metrics/log exporter，并加载隐私扩展。独立管理端口会迁走 health/metrics，业务端口另外核监听 JVM 归属。启动进程不是操作系统自启/守护程序；文件存在、编译成功、IDE配置写入、服务启动、NAS目标UP、ES入库和Jaeger链路需分别验收。
 
+gateway 1.1.6 的统一准备入口成套设置 `gateway.observability.client-span-enabled=true` 与 `otel.instrumentation.reactor-netty-1.0.enabled=false`；其余八服务不增加这两个键。应用开关默认关闭，只有统一入口启用的 Gateway 才接管出站 HTTP span：发送前建立真实 CLIENT 并注入 W3C 身份，完整监听响应体完成、活动取消和上游错误，恰好结束一次。公开 Instrumenter／Reactor bridge 抑制底层重复 CLIENT，保留自动 SERVER；不能换成 `otel.instrumentation.reactor-netty.enabled=false` 或 `otel.instrumentation.netty.enabled=false`，也不能只修改成套配置中的一项。原生 IDEA、服务器 Jar 复用同一 preflight，VM、环境变量及业务参数覆盖应用开关或 OTel 选择器会被拒绝。
+
+Gateway 的固定真实 agent 子 JVM 验证为显式 opt-in：在 `gateway` 仓库提供 `FLEET_TEST_AGENT`、`FLEET_TEST_PRIVACY` 两个已有制品的本机路径，运行 `./gradlew test --tests com.kellen.config.GatewayClientTracingAgentTest --no-daemon`。没有路径时普通 CI 明确跳过三个用例；测试不隐式联网下载、不读取私有运行配置、不调用模型，使用回环 HTTP 和 exporter 边界核对真实父子 span。源码测试、隔离 agent 验证、目标运行态及整条调用链读回分别验收，不能用 100% 采样或容器／进程启动成功替代。
+
 本机访问自身私网地址可能被本机路由/网络策略阻断，即使 NAS 已成功抓取。托管验证超时会保留新 JVM 和诊断回执，不自动回滚或杀进程；先从 NAS 核 health、令牌边界和目标状态，再决定是否重试。
 
 ## 个人 PostgreSQL 数据迁移
