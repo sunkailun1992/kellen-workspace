@@ -45,6 +45,7 @@ class ObservedLauncherTest(unittest.TestCase):
                 'e43a270df53c6f423e0ab157be9c27ccc' + '01d5dc3232e162fe54777573db2f149',
                 hashlib.sha256(agent.read_bytes()).hexdigest())
             (fixture_root / "scripts/observability_runtime.py").write_text(helper)
+            (fixture_root / "scripts/service_runtime_environment.py").write_text((ROOT / "scripts/service_runtime_environment.py").read_text())
             (fixture_root / "repos.json").write_text((ROOT / "repos.json").read_text())
             (fixture_root / "rag").mkdir()
             (fixture_root / "rag/build.gradle").write_text("version = '1.1.6'\n")

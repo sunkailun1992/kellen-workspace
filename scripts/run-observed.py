@@ -24,7 +24,7 @@ def main():
         prepare(args.service, checkout_version(args.service), **load_binding(), write=not args.dry_run)
     except Exception:
         parser.exit(2, "personal launch binding, pinned artifacts or runtime configuration invalid; private values omitted\n")
-    command = [str(ROOT / "gradlew"), "--init-script", str(ROOT / "scripts/observability.init.gradle"),
+    command = [str(ROOT / "gradlew"), "--no-daemon", "--init-script", str(ROOT / "scripts/observability.init.gradle"),
                f":{args.service}:bootRun"]
     if args.dry_run:
         print(json.dumps({"service": args.service, "command": command,

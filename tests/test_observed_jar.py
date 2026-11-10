@@ -143,7 +143,7 @@ class ObservedJarProcessTests(unittest.TestCase):
         runtime_tests.RuntimePreparationTests.setUp(self)
         self.scripts = self.root / "scripts"
         self.scripts.mkdir()
-        for name in ("observability_runtime.py", "run-observed-jar.py"):
+        for name in ("observability_runtime.py", "service_runtime_environment.py", "run-observed-jar.py"):
             shutil.copy2(ROOT / "scripts" / name, self.scripts / name)
         source = self.root / "Fixture.java"
         source.write_text(r'''
@@ -174,6 +174,9 @@ public class Fixture {
     if (!"ecs".equals(p.getProperty("logging.structured.format.file"))) throw new IllegalStateException();
     if (!"27200".equals(p.getProperty("dubbo.protocol.port"))) throw new IllegalStateException();
     if (System.getenv("DUBBO_PROTOCOL_PORT") != null) throw new IllegalStateException();
+    if (System.getenv("AI_STORAGE_KEK_B64") != null || System.getenv("AI_MODELCONTROLPLANE_APIKEY") != null || System.getenv("GITHUB_MINIO_SECRET_KEY") != null) throw new IllegalStateException("FOREIGN_ENV_REACHED_RAG");
+    if (System.getProperty("GITHUB_RAG_QWEN_API_KEY") != null) throw new IllegalStateException("OS_SECRET_BECAME_PROPERTY");
+    if (System.getProperty("fixture.expect.os") != null && !"SYNTHETIC_BOUND_RAG_KEY".equals(System.getenv("GITHUB_RAG_QWEN_API_KEY"))) throw new IllegalStateException("BOUND_OS_ENV_MISSING");
     Path log = Path.of(p.getProperty("logging.file.name"));
     Files.writeString(log, "{\"event\":\"fixture_started\",\"service\":\"rag\",\"version\":\"1.2.3\"}\n");
     HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
@@ -235,8 +238,14 @@ public class Fixture {
         self.addCleanup(collector.server_close)
         self.addCleanup(collector.shutdown)
         self.env.write_text(self.env.read_text().replace("http://127.0.0.1:14318", f"http://127.0.0.1:{collector.server_port}"))
-        environment = dict(os.environ, DUBBO_PROTOCOL_PORT="1", DUBBO_UNRELATED_TOOL_METADATA="keep")
-        proc = subprocess.Popen(self.command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=environment)
+        source=self.root.resolve()/"service-rag.json";source.write_text(json.dumps({"GITHUB_RAG_QWEN_API_KEY":"SYNTHETIC_BOUND_RAG_KEY"}));source.chmod(0o600)
+        command=self.command+["--service-env-file",str(source)]
+        # 夹具自身只用非秘密布尔 JVM 标记要求检查；真实 key 只能经目标 OS 环境传入。
+        java_wrapper=self.root/"java-wrapper"
+        java_wrapper.write_text("#!/bin/sh\nexec java -Dfixture.expect.os=true \"$@\"\n");java_wrapper.chmod(0o700)
+        command.extend(["--java",str(java_wrapper)])
+        environment = dict(os.environ, DUBBO_PROTOCOL_PORT="1", DUBBO_UNRELATED_TOOL_METADATA="keep",AI_STORAGE_KEK_B64="SYNTHETIC_FOREIGN_AI",AI_MODELCONTROLPLANE_APIKEY="SYNTHETIC_FOREIGN_CATALOG",GITHUB_MINIO_SECRET_KEY="SYNTHETIC_RETIRED_STORAGE")
+        proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=environment)
         try:
             signal = self.root / "state/logs/rag.json.port"
             deadline = time.monotonic() + 12

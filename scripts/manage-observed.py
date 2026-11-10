@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import urlsplit
 
-from observability_runtime import SAFE_FIELDS, checkout_version, configure_binding, prepare, secure_directory
+from observability_runtime import SAFE_FIELDS, checkout_version, configure_binding, load_binding, prepare, secure_directory
 
 ROOT = Path(__file__).resolve().parents[1]
 SERVICES = {
@@ -189,7 +189,7 @@ def service_start(args, environment, state):
 
 def launch_preflight(args, state, service):
     configure_binding(args.runtime_env, args.dev_env, state, root=ROOT)
-    prepare(service, checkout_version(service, ROOT), args.runtime_env, args.dev_env, state)
+    prepare(service, checkout_version(service, ROOT), **load_binding(ROOT))
 
 
 def collector_offsets(state):

@@ -17,3 +17,5 @@
 - Gradle composite继续用于构建模型、SDK源码替换和验证；标准wrapper不改。命令行/服务器Jar入口保持独立，不替代IDE原生启动体验。
 - 提交前、推送前fetch；远端前进时在验证后正常整合，不强推。新功能分支使用`codex/`前缀，完整交付main后清理本次短分支。
 - 编译、脚本测试、IDE导入、CI、部署与运行态验收分别记录，不能互相代替。
+
+- 服务 OS 环境输入按 `docs/service-environment.md` 的私有 JSON/每服务 allowlist 准备；AI KEK 只能走本服务 OS env，不进 properties、JVM-D、argv、Git 或 IDE XML 值。原生 envFilePaths 只保存路径，未知用户 env 文件保留并拒绝接管；不把源码支持等同实际 IDE 已应用。

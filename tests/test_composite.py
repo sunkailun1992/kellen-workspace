@@ -68,6 +68,26 @@ tasks.register('plainJava', JavaExec)
         self.assertIn('观测启动前校验失败', result.stdout)
         self.assertNotIn('既有 JVM/业务参数覆盖受控观测配置', result.stdout)
 
+    def test_bound_os_secret_only_reaches_selected_javaexec_and_not_properties_or_test_jvm(self):
+        self.create_builds()
+        shutil.copy2(ROOT/'scripts/observability.init.gradle',self.root/'scripts/observability.init.gradle')
+        secret='SYNTHETIC_BOUND_MODEL_KEY'
+        source=self.root.resolve()/'service-source.json';source.write_text(json.dumps({'GITHUB_RAG_QWEN_API_KEY':secret}));source.chmod(0o600)
+        import hashlib
+        receipt={'jvm_arguments':[],'service_environment':{'path':str(source),'sha256':hashlib.sha256(source.read_bytes()).hexdigest(),'keys':['GITHUB_RAG_QWEN_API_KEY']}}
+        (self.root/'scripts/prepare-observed.py').write_text('import json; print('+repr(json.dumps(receipt))+')')
+        (self.root/'rag/src/main/java/fixture/App.java').write_text('package fixture; public class App { public static void main(String[] a){if(!"SYNTHETIC_BOUND_MODEL_KEY".equals(System.getenv("GITHUB_RAG_QWEN_API_KEY")) || System.getProperty("GITHUB_RAG_QWEN_API_KEY")!=null)throw new IllegalStateException("CHILD_SCOPE_FAILED");System.out.println("SCOPED_OS_ENV_OK");}}')
+        with (self.root/'rag/build.gradle').open('a')as f:
+            f.write("\ntasks.named('bootRun') { dependsOn classes; classpath=sourceSets.main.runtimeClasspath }\n")
+            f.write("tasks.register('assertOsScope') { doLast { if(System.getenv('GITHUB_RAG_QWEN_API_KEY')!=null || tasks.named('test').get().environment.containsKey('GITHUB_RAG_QWEN_API_KEY'))throw new GradleException('PARENT_SCOPE_FAILED'); println 'PARENT_SCOPE_OK' } }\n")
+        import sys
+        sys.path.insert(0,str(ROOT/'scripts'))
+        import observability_runtime
+        environment=observability_runtime.controlled_environment(os.environ,service='rag')
+        result=subprocess.run([str(self.root/'gradlew'),'--offline','--console=plain','--no-daemon','-I','scripts/observability.init.gradle',':rag:assertOsScope',':rag:bootRun'],cwd=self.root,env=environment,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=240)
+        self.assertEqual(result.returncode,0,result.stdout)
+        self.assertIn('PARENT_SCOPE_OK',result.stdout);self.assertIn('SCOPED_OS_ENV_OK',result.stdout);self.assertNotIn(secret,result.stdout)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="workspace 空格 ")
         self.addCleanup(self.temp.cleanup)

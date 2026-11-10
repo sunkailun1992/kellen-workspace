@@ -9,7 +9,7 @@ import re
 import stat
 import zipfile
 
-from observability_runtime import ROOT, SERVICES, controlled_environment, load_binding, prepare, secure_directory, validate_application_args
+from observability_runtime import ROOT, SERVICES, controlled_environment, launch_environment, load_binding, prepare, secure_directory, validate_application_args
 
 
 def jar_version(path, service):
@@ -118,6 +118,7 @@ def main():
     parser.add_argument("--dev-env", type=Path)
     parser.add_argument("--state-dir", type=Path)
     parser.add_argument("--java", type=Path)
+    parser.add_argument("--service-env-file",type=Path)
     parser.add_argument("--dry-run", action="store_true")
     args, application_args = parser.parse_known_args()
     try:
@@ -129,6 +130,7 @@ def main():
         inputs = load_binding() if not args.runtime_env else {
             "runtime_env": args.runtime_env, "dev_env": args.dev_env,
             "state_dir": args.state_dir or ROOT / "build/observability-runtime"}
+        if args.service_env_file is not None:inputs["service_env_file"]=args.service_env_file
         if not inputs.get("dev_env"):
             raise ValueError("private dev environment required")
         # 先完成所有配置校验，再创建制品副本；dry-run 不生成目录或配置。
@@ -145,7 +147,7 @@ def main():
                               "artifact_policy": "immutable content copy", "secret_values": "not displayed", "files_written": False}))
             return 0
         # 配置文件是这次启动的权威；旧 shell 中的遥测变量不能覆盖私有文件。
-        environment = controlled_environment(os.environ, service=args.service)
+        environment = launch_environment(os.environ,args.service,receipt)
         os.execvpe(java, command, environment)
     except Exception as error:
         print(json.dumps({"status": "failed", "error_class": type(error).__name__, "private_values": "omitted"}))

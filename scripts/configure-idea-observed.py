@@ -11,7 +11,7 @@ import tempfile
 import xml.etree.ElementTree as ET
 
 from observability_runtime import (ROOT, SERVICES, checkout_version, configure_binding, ide_controlled_env_name,
-                                   failure_hint, failure_reason, idea_reference, idea_vm_arguments, load_binding,
+                                   failure_hint, failure_reason, idea_reference, idea_vm_arguments, idea_service_environment, load_binding,
                                    prepare, runtime_inputs, RuntimeValidationError,
                                    secure_directory, validate_idea_application_args)
 import workspace
@@ -69,6 +69,7 @@ def candidate(root, inputs):
         validate_idea_application_args(shlex.split(program.get("value", "")) if program is not None else [], receipt)
         if any(ide_controlled_env_name(item.get("name", ""), receipt) for item in config.findall("./envs/env")):
             raise RuntimeValidationError("IDE_ENV_OVERRIDE")
+        idea_service_environment(config,receipt,root,update=True)
         # IntelliJ 的 VM 参数语法支持双引号；XML 中只有路径，无令牌或连接配置正文。
         encoded = " ".join('"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
                            for value in retained)
@@ -108,6 +109,7 @@ def main():
     parser.add_argument("--runtime-env", type=Path)
     parser.add_argument("--dev-env", type=Path)
     parser.add_argument("--state-dir", type=Path)
+    parser.add_argument("--service-env",action="append",help="service=/absolute/private/environment.json; values are never arguments")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--expected-sha256")
     parser.add_argument("--idea-config-dir", type=Path, required=True)
@@ -117,6 +119,9 @@ def main():
         inputs = load_binding() if not args.runtime_env else {
             "runtime_env": args.runtime_env, "dev_env": args.dev_env,
             "state_dir": args.state_dir or ROOT / "build/observability-runtime"}
+        if args.service_env is not None:
+            from service_runtime_environment import parse_references
+            inputs["service_envs"]={**inputs.get("service_envs",{}),**parse_references(args.service_env)}
         runtime_inputs(inputs["runtime_env"], inputs["dev_env"])
         path, before, after, selected = candidate(ROOT, inputs)
         tools = plan_external_tools(ROOT, args.idea_config_dir)

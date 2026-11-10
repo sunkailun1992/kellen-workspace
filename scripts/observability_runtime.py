@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 from urllib.parse import unquote_to_bytes, urlsplit
 import zipfile
+import service_runtime_environment as service_env
 
 ROOT = Path(__file__).resolve().parents[1]
 PINNED_AGENT_SHA256 = "e43a270df53c6f423e0ab157be9c27ccc01d5dc3232e162fe54777573db2f149"
@@ -50,7 +51,8 @@ REASON_CODES = frozenset({"LAUNCH_BINDING_MISSING", "LAUNCH_BINDING_INVALID", "R
                           "IDE_REFERENCE_SYNTAX_INVALID", "IDE_MODULE_MISMATCH",
                           "IDE_VM_ARGUMENTS_INVALID", "IDE_VM_OVERRIDE", "IDE_ENV_OVERRIDE",
                           "IDE_APPLICATION_ARGS_OVERRIDE", "IDE_APPLICATION_MISSING", "IDE_CONFIGURATION_INVALID",
-                          "IDE_REPOSITORY_MISMATCH", "IDE_METADATA_CHANGED", "IDE_PREFLIGHT_CONFLICT"})
+                          "IDE_REPOSITORY_MISMATCH", "IDE_METADATA_CHANGED", "IDE_PREFLIGHT_CONFLICT",
+                          "IDE_ENV_FILE_CONFLICT", "IDE_ENV_FILE_CHANGED"}) | service_env.REASON_CODES
 
 
 class RuntimeValidationError(ValueError):
@@ -61,12 +63,14 @@ class RuntimeValidationError(ValueError):
 
 
 def failure_reason(error):
-    return error.reason_code if isinstance(error, RuntimeValidationError) else "RUNTIME_PREFLIGHT_FAILED"
+    return error.reason_code if isinstance(error, (RuntimeValidationError,service_env.EnvironmentError)) else "RUNTIME_PREFLIGHT_FAILED"
 
 
 def failure_hint(reason):
     if reason.startswith("LAUNCH_BINDING_"):
         return "check the restricted private launch binding; values omitted"
+    if reason.startswith("SERVICE_ENV_"):
+        return "check the owner-only per-service JSON environment and key scope; values omitted"
     if reason.startswith("IDE_"):
         return "check the IDEA Application references, parameters and environment; values omitted"
     return "check private runtime inputs, artifacts and output permissions; values omitted"
@@ -138,7 +142,7 @@ def controlled_environment(environment, service=None):
 
 def managed_property(name, service=None):
     normalized = re.sub(r"[^a-z0-9]", "", name.lower())
-    return ((service in RPC_PORTS and normalized in RPC_PORT_PROPERTY_NAMES)
+    return (service_env.controlled_service_name(name) or (service in RPC_PORTS and normalized in RPC_PORT_PROPERTY_NAMES)
             or (service == "gateway" and normalized == "gatewayobservabilityclientspanenabled")
             or normalized.startswith(("otel", "management", "securityactuator", "logging", "github", "appenv", "fleetobservability",
                                       "springapplicationversion", "springapplicationname", "springapplicationjson",
@@ -152,6 +156,8 @@ def controlled_env_name(name, service=None):
 def ide_controlled_env_name(name, receipt):
     """IDE inherits shell tooling too; only actual project GitHub keys are overrides."""
     normalized = re.sub(r"[^a-z0-9]", "", name.lower())
+    if service_env.controlled_service_name(name):
+        return True
     if normalized.startswith("github"):
         project_names = receipt.get("project_environment_names", ())
         protected = {re.sub(r"[^a-z0-9]", "", key.lower())
@@ -306,32 +312,43 @@ def load_binding(root=ROOT):
     if not path.exists():
         raise RuntimeValidationError("LAUNCH_BINDING_MISSING")
     try:
-        result = json.loads(private_file(path).read_text())
-        if set(result) != {"runtime_env", "dev_env", "state_dir"}:
+        result = json.loads(private_file(path).read_text(),object_pairs_hook=service_env._pairs)
+        if not {"runtime_env", "dev_env", "state_dir"} <= set(result) or set(result)-{"runtime_env","dev_env","state_dir","service_envs"}:
             raise ValueError("local launch binding invalid")
-        return {key: Path(value) for key, value in result.items()}
+        refs=service_env.binding_references(result.pop("service_envs",{}))
+        loaded={key:Path(value) for key,value in result.items()}
+        if refs:loaded["service_envs"]=refs
+        return loaded
     except (ValueError, TypeError, OSError):
         raise RuntimeValidationError("LAUNCH_BINDING_INVALID") from None
 
 
-def configure_binding(runtime_env, dev_env, state_dir, root=ROOT):
+def configure_binding(runtime_env, dev_env, state_dir, root=ROOT, service_envs=None):
     runtime_inputs(runtime_env, dev_env)
     result = {"runtime_env": str(Path(runtime_env).absolute()), "dev_env": str(Path(dev_env).absolute()),
               "state_dir": str(Path(state_dir).absolute())}
+    if service_envs is None and binding_path(root).exists():
+        service_envs=load_binding(root).get("service_envs",{})
+    refs=service_env.binding_references(service_envs or {})
+    for name,path in refs.items():service_env.load_service_environment(path,name)
+    if refs:result["service_envs"]={name:str(path) for name,path in refs.items()}
     write_private(binding_path(root), json.dumps(result, indent=2) + "\n")
 
 
-def prepare(service, version, runtime_env, dev_env, state_dir, write=True):
+def prepare(service, version, runtime_env, dev_env, state_dir, write=True, service_envs=None, service_env_file=None):
     if service not in SERVICES or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.+_-]{0,63}", version):
         raise ValueError("service or version invalid")
     environment, agent, privacy = runtime_inputs(runtime_env, dev_env)
+    overrides,env_metadata=service_env.select_environment(service,service_envs,service_env_file)
+    native_contents=service_env.native_env_contents(overrides)
     state = Path(state_dir).absolute()
     directory = state / "prepared" / service
     logs = state / "logs"
     secure_directory(state, create=write)
     secure_directory(directory, create=write)
     secure_directory(logs, create=write)
-    app = {key: value for key, value in environment.items() if key.startswith("GITHUB_")}
+    app = service_env.github_environment(environment,service)
+    for key in overrides:app.pop(key,None)
     app.update({"APP_ENV": "dev", "GITHUB_NACOS_DEV_NAMESPACE": "github-dev",
                 "security.actuator.token": environment["GITHUB_ACTUATOR_TOKEN"],
                 "spring.application.version": version, "logging.file.name": str(logs / f"{service}.json"),
@@ -372,20 +389,54 @@ def prepare(service, version, runtime_env, dev_env, state_dir, write=True):
         telemetry["otel.instrumentation.reactor-netty-1.0.enabled"] = "false"
         app["gateway.observability.client-span-enabled"] = "true"
     agent_config, app_config = directory / "agent.properties", directory / "application.properties"
-    for path in (agent_config, app_config):
+    service_config=directory/"service.env"
+    for path in (agent_config, app_config,service_config):
         if path.exists() or path.is_symlink():
             private_file(path)
     if write:
         write_private(agent_config, properties(telemetry))
         write_private(app_config, properties(app))
+        write_private(service_config,native_contents)
     # 回执只有文件路径、版本、固定开关和项目配置键名；令牌、地址等值不回显。
     return {"service": service, "version": version, "rpc_port": rpc_port, "files_written": write,
             "agent": str(agent), "privacy": str(privacy),
             "agent_config": str(agent_config), "app_config": str(app_config),
-            "project_environment_names": sorted(key for key in environment if key.startswith("GITHUB_")),
+            "service_env_config":str(service_config),"service_env_sha256":hashlib.sha256(native_contents.encode("utf-8")).hexdigest(),
+            "service_environment":env_metadata,
+            "project_environment_names": sorted({key for key in (*environment,*overrides) if key.startswith("GITHUB_")}),
             "jvm_arguments": [f"-javaagent:{agent}", f"-Dotel.javaagent.extensions={privacy}",
                               f"-Dotel.javaagent.configuration-file={agent_config}",
                               f"-Dspring.config.additional-location={app_config.as_uri()}"]}
+
+
+def launch_environment(base, service, receipt):
+    """CLI 仅把已校验的本服务键放入目标 OS 环境，不经参数或公共 JSON 传值。"""
+    if receipt.get("service")!=service:raise service_env.EnvironmentError("SERVICE_ENV_SCOPE_INVALID")
+    metadata=receipt.get("service_environment")
+    overrides=service_env.load_service_environment(metadata["path"],service,metadata["sha256"])[0] if metadata else {}
+    return service_env.process_environment(controlled_environment(base,service),service,overrides)
+
+
+def idea_service_environment(config, receipt, root=ROOT, update=False):
+    """原生 envFilePaths 的精确受管引用；未知用户文件保留并拒绝接管。"""
+    paths=config.findall("option[@name='envFilePaths']")
+    if len(paths)>1:raise RuntimeValidationError("IDE_ENV_FILE_CONFLICT")
+    if not paths:
+        if not update:raise RuntimeValidationError("IDE_ENV_FILE_CONFLICT")
+        import xml.etree.ElementTree as ET
+        outer=ET.SubElement(config,"option",name="envFilePaths")
+        ET.SubElement(outer,"option",value=receipt["service_env_config"])
+    else:
+        outer=paths[0]
+        if outer.attrib!={"name":"envFilePaths"}or len(outer)!=1:
+            raise RuntimeValidationError("IDE_ENV_FILE_CONFLICT")
+        item=outer[0]
+        if item.tag!="option"or set(item.attrib)!={"value"}or len(item):raise RuntimeValidationError("IDE_ENV_FILE_CONFLICT")
+        if canonical_idea_path(item.get("value",""),root)!=Path(receipt["service_env_config"]).resolve():
+            raise RuntimeValidationError("IDE_ENV_FILE_CONFLICT")
+    if not update:
+        try:service_env.private_bytes(receipt["service_env_config"],receipt["service_env_sha256"],allow_system_aliases=True)
+        except service_env.EnvironmentError:raise RuntimeValidationError("IDE_ENV_FILE_CHANGED")from None
 
 
 def check_idea_runtime(service, receipt, root=ROOT):
@@ -429,6 +480,7 @@ def check_idea_runtime(service, receipt, root=ROOT):
             key = item.get("name", "")
             if ide_controlled_env_name(key, receipt):
                 raise RuntimeValidationError("IDE_ENV_OVERRIDE")
+        idea_service_environment(config,receipt,root)
         matched = True
     if not matched:
         raise RuntimeValidationError("IDE_APPLICATION_MISSING")

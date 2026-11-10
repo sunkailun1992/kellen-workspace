@@ -29,6 +29,10 @@ python3 scripts/prepare-observed.py configure \
 
 该命令只在被忽略的 `build/observability-runtime/launch.json` 保存原私有文件的路径引用。每次启动再读原文件、重验制品，生成 0700 目录中的 0600 `agent.properties` 与 `application.properties`。OTLP header、运维令牌和配置地址等实际值只在这些受限文件，不进入源码、IDE XML、命令行或回执。自定义 `--state-dir` 必须位于 Git 工作树外或被明确 ignore；可跟踪路径会在写入前拒绝。新 clone 未配置私有绑定仍可编译/测试；迁移后的原生运行入口缺少绑定时会在 JVM 启动前明确拒绝。
 
+### 每服务 OS 环境与控制面凭据
+
+存储凭据不再由全量 `GITHUB_*` properties 广播给九个服务；模型变量只给实际 Agent/RAG 消费者。AI 的 KEK 和模型只读 portal 六个 OS 键可以通过 owner-only 私有 JSON 与可选 service_envs 路径绑定接入，三键旧绑定继续兼容。KEY 不进入 JVM `-D`、公共回执或 IDE XML 值；未知用户 env 文件不自动接管。原生 envFilePaths 无需额外插件，源码支持与实际 IDE 应用分别验收。完整输入合同、CLI、继承边界和 plan/CAS 见 [服务启动凭据边界](docs/service-environment.md)。
+
 ### IDEA原生Spring Boot/Application入口
 
 已有 `GatewayApplication`、`AiAgentApplication` 等原生 Spring Boot/Application 配置可受限迁移：
@@ -58,7 +62,7 @@ IDEA 可能继承交互 shell 的工具环境。检查仅把私有项目配置�
 
 ### 服务器Jar入口
 
-服务器部署 `scripts/run-observed-jar.py`、`scripts/observability_runtime.py` 与业务 Boot Jar。配置仍由服务器自己的受限私有 env 提供：
+服务器部署 `scripts/run-observed-jar.py`、`scripts/observability_runtime.py`、`scripts/service_runtime_environment.py` 与业务 Boot Jar。配置仍由服务器自己的受限私有 env 提供：
 
 ```bash
 python3 scripts/run-observed-jar.py rag /deploy/rag.jar \

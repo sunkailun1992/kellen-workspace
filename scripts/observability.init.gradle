@@ -8,7 +8,7 @@ def services = new JsonSlurper().parse(new File(workspaceRoot, 'repos.json')).re
 def managedProperty = { raw ->
     def normalized = raw.toLowerCase(Locale.ROOT).replaceAll('[^a-z0-9]', '')
     ['otel', 'management', 'securityactuator', 'logging', 'github', 'appenv', 'springapplicationversion',
-     'springapplicationname', 'springapplicationjson', 'springconfig', 'springprofiles'].any { normalized.startsWith(it) }
+     'springapplicationname', 'springapplicationjson', 'springconfig', 'springprofiles', 'aistorage', 'aimodelcontrolplane'].any { normalized.startsWith(it) }
 }
 gradle.beforeProject { project ->
     if (services.contains(project.name) && (!observedService || project.name == observedService)) {
@@ -36,10 +36,35 @@ gradle.beforeProject { project ->
                         throw new GradleException('观测启动前校验失败；先配置受限 launch binding，私有值省略。')
                     }
                     def receipt = new JsonSlurper().parseText(output)
-                    // 秘密仅在 0600 properties 内。旧 shell 的环境不得覆盖这次私有配置。
+                    // 秘密只在受限配置或目标 OS env 内。旧 shell 的环境不得覆盖本次输入。
                     task.environment.keySet().findAll { key ->
                         managedProperty(key) || key in ['JAVA_TOOL_OPTIONS', 'JDK_JAVA_OPTIONS', '_JAVA_OPTIONS']
                     }.each { task.environment.remove(it) }
+                    if (receipt.service_environment) {
+                        // Python 已完成严格 source 校验；此处重核同一字节摘要，值仅进目标 JavaExec OS env。
+                        try {
+                            def source = java.nio.file.Path.of(receipt.service_environment.path)
+                            def nofollow = java.nio.file.LinkOption.NOFOLLOW_LINKS
+                            for (def item = source; item != null; item = item.parent) {
+                                if (java.nio.file.Files.isSymbolicLink(item)) throw new IllegalStateException()
+                            }
+                            def attrs = java.nio.file.Files.readAttributes(source, 'unix:uid,nlink,mode,size', nofollow)
+                            if ((attrs.mode & 0777) != 0600 || attrs.nlink != 1 || attrs.size > 65536 ||
+                                    java.nio.file.Files.getOwner(source,nofollow).name != System.getProperty('user.name')) {
+                                throw new IllegalStateException()
+                            }
+                            byte[] bytes = java.nio.file.Files.readAllBytes(source)
+                            if (java.security.MessageDigest.getInstance('SHA-256').digest(bytes).encodeHex().toString() != receipt.service_environment.sha256) {
+                                throw new IllegalStateException()
+                            }
+                            def values = new JsonSlurper().parseText(new String(bytes,java.nio.charset.StandardCharsets.UTF_8))
+                            if (!(values instanceof Map) || values.keySet().sort() != receipt.service_environment.keys.sort() ||
+                                    !values.values().every { it instanceof String }) throw new IllegalStateException()
+                            task.environment(values)
+                        } catch (Exception ignored) {
+                            throw new GradleException('服务私有 OS 环境校验失败；保留原输入，私有值省略。')
+                        }
+                    }
                     task.jvmArgs(receipt.jvm_arguments)
                 }
             }

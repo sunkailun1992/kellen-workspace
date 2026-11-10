@@ -118,7 +118,7 @@ class RuntimePreparationTests(unittest.TestCase):
         path = self.create_idea_fixture()
         _, _, after, _ = idea.candidate(self.root, self.inputs)
         path.write_bytes(after)
-        receipt = runtime.prepare("ai-memory", "1.2.3", **self.inputs, write=False)
+        receipt = runtime.prepare("ai-memory", "1.2.3", **self.inputs, write=True)
         with patch.dict(os.environ, {}, clear=True):
             runtime.check_idea_runtime("ai-memory", receipt, self.root)
             for key in ("DUBBO_PROTOCOL_PORT", "TRI_DUBBO_PORT_TO_BIND"):
@@ -192,7 +192,7 @@ class RuntimePreparationTests(unittest.TestCase):
     def test_native_gateway_preflight_rejects_client_span_vm_program_and_environment_overrides(self):
         path = self.create_idea_fixture()
         _, _, after, _ = idea.candidate(self.root, self.inputs)
-        receipt = runtime.prepare("gateway", "1.2.3", **self.inputs, write=False)
+        receipt = runtime.prepare("gateway", "1.2.3", **self.inputs, write=True)
         with patch.dict(os.environ, {}, clear=True):
             path.write_bytes(after)
             runtime.check_idea_runtime("gateway", receipt, self.root)
@@ -395,7 +395,7 @@ class RuntimePreparationTests(unittest.TestCase):
         self.dev.write_text(self.dev.read_text() + "GITHUB_CUSTOM_SOURCE_URL=SYNTHETIC_PROJECT_PRIVATE_VALUE\n")
         _, _, after, _ = idea.candidate(self.root, self.inputs)
         path.write_bytes(after)
-        receipt = runtime.prepare("gateway", "1.2.3", **self.inputs, write=False)
+        receipt = runtime.prepare("gateway", "1.2.3", **self.inputs, write=True)
         shell = self.root / 'shell'
         shell.mkdir()
         (shell / '.zshrc').write_text('export GITHUB_PERSONAL_ACCESS_TOKEN=SYNTHETIC_TOOL_TOKEN\nexport GITHUB_ANOTHER_TOOL_METADATA=SYNTHETIC_TOOL_METADATA\n')
@@ -426,7 +426,7 @@ class RuntimePreparationTests(unittest.TestCase):
         path.write_bytes(workspace.idea_xml_bytes(tree))
         _, _, after, _ = idea.candidate(self.root, self.inputs)
         path.write_bytes(after)
-        receipt = runtime.prepare('gateway', '1.2.3', **self.inputs, write=False)
+        receipt = runtime.prepare('gateway', '1.2.3', **self.inputs, write=True)
         with patch.dict(os.environ, {}, clear=True):
             runtime.check_idea_runtime('gateway', receipt, self.root)
         tree = workspace.parse_idea_xml(path)
@@ -587,6 +587,57 @@ class RuntimePreparationTests(unittest.TestCase):
         (self.root / ".gitignore").write_text("/state/\n/build/\n")
         result = runtime.prepare("rag", "1.1.6", **self.inputs)
         self.assertTrue(Path(result["agent_config"]).is_file())
+
+
+    def test_model_storage_scope_and_os_only_override_do_not_leave_raw_shared_values(self):
+        with self.dev.open('a')as stream:
+            stream.write('GITHUB_MINIO_SECRET_KEY=SYNTHETIC_OLD_STORAGE\nGITHUB_GOOGLE_API_KEY=SYNTHETIC_OLD_GOOGLE\nGITHUB_RAG_QWEN_API_KEY=SYNTHETIC_EMBEDDING\nGITHUB_POSTGRESQL_AI_PASSWORD=SYNTHETIC_DATABASE\n')
+        path=self.root.resolve()/'service-ai.json';path.write_text(json.dumps({'AI_STORAGE_KEK_B64':'SYNTHETIC_AI_MASTER','AI_MODELCONTROLPLANE_APIKEY':'SYNTHETIC_CATALOG'}));path.chmod(0o600)
+        refs={'ai':path}
+        for name in runtime.SERVICES:
+            receipt=runtime.prepare(name,'1.2.3',**self.inputs,service_envs=refs)
+            app=Path(receipt['app_config']).read_text()
+            self.assertNotIn('SYNTHETIC_OLD_STORAGE',app);self.assertNotIn('SYNTHETIC_AI_MASTER',app);self.assertNotIn('SYNTHETIC_CATALOG',app)
+            self.assertEqual('SYNTHETIC_OLD_GOOGLE'in app,name=='ai-agent')
+            self.assertEqual('SYNTHETIC_EMBEDDING'in app,name=='rag')
+            self.assertIn('SYNTHETIC_DATABASE',app)
+            self.assertNotIn('SYNTHETIC_',json.dumps(receipt))
+            native=Path(receipt['service_env_config']).read_text()
+            self.assertEqual('SYNTHETIC_AI_MASTER'in native,name=='ai')
+        agent=self.root.resolve()/'service-agent.json';agent.write_text(json.dumps({'GITHUB_GOOGLE_API_KEY':'SYNTHETIC_SCOPED_VKEY'}));agent.chmod(0o600)
+        receipt=runtime.prepare('ai-agent','1.2.3',**self.inputs,service_envs={'ai-agent':agent})
+        self.assertNotIn('SYNTHETIC_OLD_GOOGLE',Path(receipt['app_config']).read_text())
+        self.assertEqual(runtime.launch_environment({'PATH':'keep','AI_STORAGE_KEK_B64':'rogue'},'ai-agent',receipt)['GITHUB_GOOGLE_API_KEY'],'SYNTHETIC_SCOPED_VKEY')
+        self.assertNotIn('AI_STORAGE_KEK_B64',runtime.launch_environment({},'ai-agent',receipt))
+
+    def test_optional_service_binding_preserves_legacy_three_keys_and_ordinary_refresh(self):
+        runtime.configure_binding(**self.inputs,root=self.root)
+        self.assertEqual(set(runtime.load_binding(self.root)),{'runtime_env','dev_env','state_dir'})
+        path=self.root.resolve()/'service-ai.json';path.write_text(json.dumps({'AI_STORAGE_KEK_ID':'fixture-v1'}));path.chmod(0o600)
+        runtime.configure_binding(**self.inputs,service_envs={'ai':path},root=self.root)
+        runtime.configure_binding(**self.inputs,root=self.root)
+        self.assertEqual(runtime.load_binding(self.root)['service_envs'],{'ai':path})
+        receipt=runtime.prepare('ai','1.2.3',**runtime.load_binding(self.root),write=False)
+        self.assertFalse(receipt['files_written']);self.assertEqual(receipt['service_environment']['keys'],['AI_STORAGE_KEK_ID'])
+        path.write_text(json.dumps({'AI_STORAGE_KEK_ID':'changed'}))
+        with self.assertRaises(ValueError):runtime.launch_environment({},'ai',receipt)
+
+    def test_native_service_env_paths_are_exact_and_unknown_user_files_are_preserved(self):
+        path=self.create_idea_fixture();source=self.root.resolve()/'service-ai.json'
+        source.write_text(json.dumps({'AI_STORAGE_KEK_ID':'fixture-v1'}));source.chmod(0o600)
+        inputs=dict(self.inputs,service_envs={'ai':source})
+        _,_,after,_=idea.candidate(self.root,inputs)
+        path.write_bytes(after)
+        for service in runtime.SERVICES:
+            receipt=runtime.prepare(service,'1.2.3',**inputs)
+            with patch.dict(os.environ,{},clear=True):runtime.check_idea_runtime(service,receipt,self.root)
+        tree=workspace.parse_idea_xml_bytes(after);config=tree.getroot().find("./component/configuration[@name='ai']")
+        envfile=config.find("option[@name='envFilePaths']/option")
+        self.assertIsNotNone(envfile);self.assertTrue(envfile.get('value').endswith('/ai/service.env'))
+        self.assertIsNone(config.find("option[@name='envFilePaths']/list"))
+        envfile.set('value','/private/user-owned.env');path.write_bytes(workspace.idea_xml_bytes(tree));before=path.read_bytes()
+        with self.assertRaises(ValueError):idea.candidate(self.root,inputs)
+        self.assertEqual(path.read_bytes(),before)
 
 
 if __name__ == "__main__":
