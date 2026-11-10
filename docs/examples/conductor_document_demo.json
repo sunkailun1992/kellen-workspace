@@ -1,0 +1,140 @@
+{
+  "taskDefinitions": [
+    {
+      "name": "fleet_demo_document_validate_v1",
+      "description": "校验模拟文档元数据，不读取真实文件",
+      "ownerEmail": "demo@example.invalid",
+      "retryCount": 0,
+      "timeoutSeconds": 30,
+      "responseTimeoutSeconds": 10,
+      "timeoutPolicy": "RETRY",
+      "retryLogic": "FIXED",
+      "retryDelaySeconds": 1,
+      "concurrentExecLimit": 1
+    },
+    {
+      "name": "fleet_demo_document_retrieve_v1",
+      "description": "返回固定模拟检索引用，不连接检索服务",
+      "ownerEmail": "demo@example.invalid",
+      "retryCount": 0,
+      "timeoutSeconds": 30,
+      "responseTimeoutSeconds": 10,
+      "timeoutPolicy": "RETRY",
+      "retryLogic": "FIXED",
+      "retryDelaySeconds": 1,
+      "concurrentExecLimit": 1
+    },
+    {
+      "name": "fleet_demo_document_ai_v1",
+      "description": "固定AI替身：首次受控失败，重试成功；provider=stub",
+      "ownerEmail": "demo@example.invalid",
+      "retryCount": 1,
+      "timeoutSeconds": 30,
+      "responseTimeoutSeconds": 10,
+      "timeoutPolicy": "RETRY",
+      "retryLogic": "FIXED",
+      "retryDelaySeconds": 1,
+      "concurrentExecLimit": 1
+    },
+    {
+      "name": "fleet_demo_document_record_v1",
+      "description": "私有SQLite幂等结果登记，不发送消息",
+      "ownerEmail": "demo@example.invalid",
+      "retryCount": 1,
+      "timeoutSeconds": 30,
+      "responseTimeoutSeconds": 10,
+      "timeoutPolicy": "RETRY",
+      "retryLogic": "FIXED",
+      "retryDelaySeconds": 1,
+      "concurrentExecLimit": 1
+    }
+  ],
+  "workflow": {
+    "name": "fleet_demo_document_analysis_v1",
+    "version": 1,
+    "description": "文档模拟业务流：元数据校验→模拟检索→模拟AI受控重试→真实WAIT→幂等登记；无真实模型/文档/消息",
+    "ownerEmail": "demo@example.invalid",
+    "schemaVersion": 2,
+    "restartable": false,
+    "timeoutSeconds": 180,
+    "timeoutPolicy": "TIME_OUT_WF",
+    "inputParameters": [
+      "runId",
+      "idempotencyKey",
+      "scenario",
+      "simulated",
+      "document",
+      "waitDuration"
+    ],
+    "tasks": [
+      {
+        "name": "fleet_demo_document_validate_v1",
+        "taskReferenceName": "validate_metadata",
+        "description": "校验模拟文档元数据，不读取真实文件",
+        "type": "SIMPLE",
+        "inputParameters": {
+          "runId": "${workflow.input.runId}",
+          "idempotencyKey": "${workflow.input.idempotencyKey}",
+          "scenario": "${workflow.input.scenario}",
+          "simulated": "${workflow.input.simulated}",
+          "document": "${workflow.input.document}"
+        }
+      },
+      {
+        "name": "fleet_demo_document_retrieve_v1",
+        "taskReferenceName": "retrieve_context",
+        "description": "返回固定模拟检索引用，不连接检索服务",
+        "type": "SIMPLE",
+        "inputParameters": {
+          "runId": "${workflow.input.runId}",
+          "idempotencyKey": "${workflow.input.idempotencyKey}",
+          "scenario": "${workflow.input.scenario}",
+          "simulated": "${workflow.input.simulated}",
+          "document": "${workflow.input.document}"
+        }
+      },
+      {
+        "name": "fleet_demo_document_ai_v1",
+        "taskReferenceName": "analyze_document",
+        "description": "固定AI替身：首次受控失败，重试成功；provider=stub",
+        "type": "SIMPLE",
+        "inputParameters": {
+          "runId": "${workflow.input.runId}",
+          "idempotencyKey": "${workflow.input.idempotencyKey}",
+          "scenario": "${workflow.input.scenario}",
+          "simulated": "${workflow.input.simulated}",
+          "document": "${workflow.input.document}",
+          "references": "${retrieve_context.output.references}"
+        }
+      },
+      {
+        "name": "wait_for_registration",
+        "taskReferenceName": "wait_for_registration",
+        "description": "Conductor真实WAIT；worker可停止后恢复，不重启或伪造步骤",
+        "type": "WAIT",
+        "inputParameters": {
+          "duration": "${workflow.input.waitDuration}"
+        }
+      },
+      {
+        "name": "fleet_demo_document_record_v1",
+        "taskReferenceName": "register_result",
+        "description": "私有SQLite幂等结果登记，不发送消息",
+        "type": "SIMPLE",
+        "inputParameters": {
+          "runId": "${workflow.input.runId}",
+          "idempotencyKey": "${workflow.input.idempotencyKey}",
+          "scenario": "${workflow.input.scenario}",
+          "simulated": "${workflow.input.simulated}",
+          "document": "${workflow.input.document}",
+          "analysis": "${analyze_document.output.analysis}"
+        }
+      }
+    ],
+    "outputParameters": {
+      "simulated": true,
+      "provider": "stub",
+      "recordId": "${register_result.output.recordId}"
+    }
+  }
+}

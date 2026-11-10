@@ -95,6 +95,14 @@ Gateway 的固定真实 agent 子 JVM 验证为显式 opt-in：在 `gateway` 仓
 
 工具保留原 ID，以每库事务复制和内容指纹校验，并通过受限 receipts 记录提交与序列校准；不创建表、删除、覆盖或自动切换 Nacos。全部 VERIFIED、独立新连接对账、服务启动、管理端点、日志和链路仍须分别验收。应用恢复写入后不得用旧迁移计划重跑或恢复。完整配置形状、超时单位、空目标准备及恢复限制见 [七库迁移说明](scripts/database/README.md)。
 
+## Conductor 文档模拟业务流
+
+[文档模拟业务流指南](docs/conductor-document-demo.md)提供独立的原生 SIMPLE worker、真实任务 Logs、受控重试、WAIT 恢复与 UTC 有界日程。编排状态保存在既有 Conductor，检索与 AI 使用明确标识的固定替身，不调用真实模型或文档；私有 SQLite 负责结果幂等登记。默认只计划，真实执行需要显式参数与 `--execute`。
+
+```bash
+python3 scripts/conductor_demo.py plan
+```
+
 ## 环境要求
 
 - Git、Bash、Python 3.10+（只使用标准库，无需安装Python依赖）。
