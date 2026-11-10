@@ -188,6 +188,14 @@ class Backend:
         return parse_logs(raw)
 
 
+def request_accept(spec: dict) -> str:
+    """请求媒体类型与响应断言分开，负例可请求 SSE 入口并判读空 HTTP 错误响应。"""
+    value = spec.get("accept", "text/event-stream" if spec.get("response_mode") == "sse" else "application/json")
+    if type(value) is not str or value not in ("application/json", "text/event-stream"):
+        raise AcceptanceError("REQUEST_ACCEPT_INVALID")
+    return value
+
+
 def load_config(path: str) -> dict:
     config = private_json(path)
     if not isinstance(config, dict) or config.get("schema_version") != 1:
@@ -211,6 +219,7 @@ def load_config(path: str) -> dict:
             raise AcceptanceError("REQUEST_AUTH_INVALID")
         if spec.get("response_mode", "json") not in ("json", "sse"):
             raise AcceptanceError("RESPONSE_MODE_INVALID")
+        request_accept(spec)
         if spec.get("cancel_after_bytes") is not None:
             count = spec["cancel_after_bytes"]
             if type(count) is not int or not 1 <= count <= 8192 or not spec["expected"].get("span_assertions"):
@@ -238,7 +247,7 @@ def manifest(config: dict) -> list[dict]:
 
 
 def send_one(config: dict, spec: dict, record: dict) -> dict:
-    headers = {"Accept": "text/event-stream" if spec.get("response_mode") == "sse" else "application/json", **headers_for(config["business"])}
+    headers = {"Accept": request_accept(spec), **headers_for(config["business"])}
     if spec.get("auth") == "none":
         headers.pop("Authorization", None)
     elif spec.get("auth") == "wrong":

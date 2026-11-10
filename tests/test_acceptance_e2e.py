@@ -374,6 +374,86 @@ class BackendTests(unittest.TestCase):
 
 
 class PrivateExecutionTests(unittest.TestCase):
+    def test_sse_entry_accept_is_independent_of_empty_json_negative_response_and_has_one_trace_ledger(self):
+        captured = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                captured.append({"accept": self.headers.get("Accept"), "traceparent": self.headers.get("traceparent")})
+                self.send_response(401 if self.headers.get("Accept") == "text/event-stream" else 500)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            spec = fixture()[0]
+            spec.update(case="chat-anonymous", method="POST", path="/api/ai/chat", route="/api/ai/chat",
+                        accept="text/event-stream", response_mode="json", auth="none")
+            spec["expected"].update(statuses=[401], negative=True)
+            spec["expected"].pop("json_assertions")
+            config = {"business": {"base_url": f"http://127.0.0.1:{server.server_port}"}, "requests": [spec]}
+            records = manifest(config)
+            result = send_one(config, spec, records[0])
+            self.assertEqual(result["http_status"], 401)
+            self.assertTrue(result["completed"])
+            self.assertTrue(result["business_ok"])
+            self.assertNotIn("sse_evidence", result)
+            self.assertEqual(captured, [{"accept": "text/event-stream", "traceparent":
+                f"00-{records[0]['trace_id']}-{records[0]['parent_span_id']}-01"}])
+            directory = ROOT / "build"
+            directory.mkdir(exist_ok=True)
+            with tempfile.TemporaryDirectory(prefix="acceptance-fixture-", dir=directory) as temporary:
+                ledger = Path(temporary) / "negative.json"
+                safe_write(ledger, json.dumps({"started_at": datetime.now(timezone.utc).isoformat(), "requests": [result]}))
+                persisted, start = read_ledger(ledger, config)
+                self.assertEqual(len(persisted), 1)
+                self.assertEqual(persisted[0]["trace_id"], records[0]["trace_id"])
+                self.assertRegex(persisted[0]["trace_id"], r"^[0-9a-f]{32}$")
+                self.assertEqual(persisted[0]["parent_span_id"], records[0]["parent_span_id"])
+                self.assertEqual(len(captured), 1)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
+    def test_invalid_accept_is_rejected_in_config_and_before_any_transport(self):
+        spec = fixture()[0]
+        config = {"schema_version": 1, "business": {"base_url": "http://example.invalid"},
+                  "jaeger": {"base_url": "http://example.invalid"},
+                  "elasticsearch": {"base_url": "http://example.invalid"}, "requests": [spec]}
+        with tempfile.TemporaryDirectory() as directory:
+            private = Path(directory) / "run.json"
+            private.touch(mode=0o600)
+            for valid in ("application/json", "text/event-stream"):
+                spec["accept"] = valid
+                private.write_text(json.dumps(config))
+                self.assertEqual(load_config(str(private))["requests"][0]["accept"], valid)
+            for invalid in (None, "", "text/event-stream\r\nX-Injected: value", "application/json\n", "*/*",
+                            "text/event-stream, application/json", "application/json; charset=utf-8", "TEXT/EVENT-STREAM", [], 1):
+                with self.subTest(invalid=invalid):
+                    spec["accept"] = invalid
+                    private.write_text(json.dumps(config))
+                    with self.assertRaisesRegex(AcceptanceError, "REQUEST_ACCEPT_INVALID"):
+                        load_config(str(private))
+                    with patch("acceptance_run.fetch") as transport:
+                        with self.assertRaisesRegex(AcceptanceError, "REQUEST_ACCEPT_INVALID"):
+                            send_one(config, spec, manifest(config)[0])
+                        transport.assert_not_called()
+
+    def test_omitted_accept_keeps_existing_json_and_sse_defaults(self):
+        for mode, expected in (("json", "application/json"), ("sse", "text/event-stream")):
+            with self.subTest(mode=mode):
+                spec = fixture()[0]
+                spec["response_mode"] = mode
+                with patch("acceptance_run.fetch", return_value=(401, b"")) as transport:
+                    send_one({"business": {"base_url": "http://example.invalid"}}, spec, fixture()[1])
+                    self.assertEqual(transport.call_args.kwargs["headers"]["Accept"], expected)
+
     def test_readback_ledger_does_not_repeat_request_or_keep_unknown_keys(self):
         spec, record, spans, logs = fixture()
         directory = ROOT / "build"

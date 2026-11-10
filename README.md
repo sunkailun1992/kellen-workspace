@@ -236,3 +236,5 @@ github-dev使用`always_on`，包括收到`traceparent`中sampled=0的请求，�
 AI的模型调用单独建`ai.model.call`子span，记忆/RAG编排与模型计时分开。日志摘要由代码按操作、模型、长度、finish reason生成；token仅在供应商实际报告时出现，公开reasoning摘要的存在性不等于模型隐藏的内部推理。当前自由Prompt/回答正文采集保持关闭，诊断投影只接受经过类型白名单的元数据，不能通过设置日志级别打开原始正文。
 
 在Grafana“探索”选择Elasticsearch，查询`Resource.service.name:"rag" AND event:"http.server.exchange"`；生成的`summary`显示可读信息，展开条目查看安全`request_body/response_body`、省略原因及`trace_id`链接。Jaeger v3原生UI可按服务/时间检索整条链。实际验收工具是`scripts/acceptance_run.py`，默认只计划，显式`--execute`才发清单；`--readback-ledger`仅重查已发Trace，避免重复调用模型。
+
+请求清单可用 `accept` 独立指定请求媒体类型，仅接受精确的 `application/json` 或 `text/event-stream`；省略时仍按 `response_mode` 保持原默认值。`response_mode` 只决定响应证据的判读方式。例如 SSE 聊天入口的未登录负例应使用 `"accept":"text/event-stream"`、`"response_mode":"json"`，并明确 `expected.negative=true` 与 `expected.statuses=[401]`；这使请求媒体类型符合目标 SSE 入口，也能判读 401 空响应。该设置不放宽 200 SSE 的业务成功／取消要求，仍须按实际终态、业务 span 和日志逐项验收。
