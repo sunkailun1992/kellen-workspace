@@ -50,6 +50,57 @@ def log_for(item):
             "http_status": 200, "duration_ms": 1.5, "outcome": "success"}
 
 
+def cancelled_ai_fixture():
+    """五个 HTTP 终态和七服务祖先链；只有 AI 两个 SERVER 的取消被记为 error。"""
+    spec, record, _, _ = fixture()
+    spec.update(case="ai-cancel", method="POST", route="/api/ai/chat", response_mode="sse", cancel_after_bytes=64)
+    services = ["gateway", "ai", "ai-agent", "ai-memory", "user", "rag", "rag-engine"]
+    spec["expected"] = {
+        "statuses": [200], "services": services, "environment": "github-dev",
+        "versions": {name: "1.2.3" for name in services}, "allow_cancelled_http_server_errors": True,
+        "edges": [{"parent": a, "child": b, "protocol": protocol} for a, b, protocol in (
+            ("gateway", "ai", "http"), ("ai", "gateway", "http"), ("gateway", "ai-agent", "http"),
+            ("ai-agent", "ai-memory", "dubbo"), ("ai-memory", "user", "dubbo"),
+            ("ai", "rag", "dubbo"), ("rag", "rag-engine", "http"))],
+        "paths": [["gateway", "ai", "gateway", "ai-agent", "ai-memory", "user"],
+                  ["gateway", "ai", "rag", "rag-engine"]],
+        "span_assertions": [
+            {"service": "ai", "name": "ai.dialogue.stream", "attributes": {"business.outcome": {"op": "equals", "value": "cancelled"}}},
+            {"service": "ai-agent", "name": "ai.agent.execution", "attributes": {"outcome": {"op": "equals", "value": "cancelled"}}},
+            {"service": "ai-agent", "name": "ai.model.call", "attributes": {"outcome": {"op": "equals", "value": "cancelled"}, "fleet.ai.usage.final": {"op": "false"}}}],
+    }
+    record.update(case="ai-cancel", business_ok=False, client_cancelled=True, sse_evidence={
+        "data_received": True, "explicit_error": False, "explicit_complete": False,
+        "response_complete": False, "client_closed": True})
+    spans = [span(1, "gateway", REMOTE), span(2, "gateway", 1, 3), span(3, "ai", 2),
+             replace(span(4, "ai", 3, 1), name="ai.dialogue.stream", attrs={"business.outcome": "cancelled"}),
+             span(5, "ai", 4, 3), span(6, "gateway", 5), span(7, "gateway", 6, 3), span(8, "ai-agent", 7),
+             replace(span(9, "ai-agent", 8, 1), name="ai.agent.execution", attrs={"outcome": "cancelled"}),
+             replace(span(10, "ai-agent", 9, 1), name="ai.model.call", attrs={"outcome": "cancelled", "fleet.ai.usage.final": False}),
+             span(11, "ai-agent", 9, 3, "dubbo"), span(12, "ai-memory", 11, 2, "dubbo"),
+             span(13, "ai-memory", 12, 3, "dubbo"), span(14, "user", 13, 2, "dubbo"),
+             span(15, "ai", 4, 3, "dubbo"), span(16, "rag", 15, 2, "dubbo"),
+             span(17, "rag", 16, 3), span(18, "rag-engine", 17)]
+    routes = {1: "/api/ai/chat", 3: "/api/ai/chat", 6: "/api/agents/patient-analysis",
+              8: "/api/agents/patient-analysis", 18: "/v1/retrieve"}
+    for index, item in enumerate(spans):
+        if item.kind == 2 and _protocol(item, "http"):
+            spans[index] = replace(item, attrs={**item.attrs, "http.response.status_code": 200,
+                                               "http.route": routes[int(item.span, 16)]},
+                                   status_error=item.service in {"ai", "ai-agent"})
+    logs = []
+    for item in spans:
+        if item.kind != 2 or not _protocol(item, "http"):
+            continue
+        log = log_for(item)
+        log["http_route"] = item.attrs["http.route"]
+        if item.service in {"ai", "ai-agent"}:
+            log.update(outcome="cancelled", error_type="io")
+        logs.append(log)
+    logs.append({**log_for(spans[9]), "event": "ai.model.call", "outcome": "cancelled"})
+    return spec, record, spans, logs
+
+
 def otlp(spans, *, encoded=False):
     def encode(value):
         return base64.b64encode(bytes.fromhex(value)).decode() if encoded else value
@@ -61,6 +112,150 @@ def otlp(spans, *, encoded=False):
                           "kind": item.kind, "flags": 1 if item.sampled else 0,
                           "attributes": [{"key": key, "value": {"stringValue": value}} for key, value in item.attrs.items()]}]}]})
     return {"resourceSpans": resources}
+
+
+class CancelledHttpServerClassificationTests(unittest.TestCase):
+    def test_active_ai_cancellation_with_five_terminal_logs_preserves_successful_readback(self):
+        spec, record, spans, logs = cancelled_ai_fixture()
+        validate_spec(spec)
+        result = reconcile(spec, record, spans, logs, {TRACE})
+        self.assertTrue(result["passed"], result)
+        self.assertEqual((result["http_spans"], result["terminal_logs_joined"], result["edges_joined"]), (5, 5, 7))
+        self.assertTrue(result["business_ok"])
+
+    def test_cancellation_error_classification_is_explicit_and_not_an_error_bypass(self):
+        for marker in (None, False):
+            with self.subTest(marker=marker):
+                spec, record, spans, logs = cancelled_ai_fixture()
+                if marker is None:
+                    del spec["expected"]["allow_cancelled_http_server_errors"]
+                else:
+                    spec["expected"]["allow_cancelled_http_server_errors"] = marker
+                result = reconcile(spec, record, spans, logs, {TRACE})
+                self.assertFalse(result["passed"])
+                self.assertIn("TRACE_ERROR_STATUS", result["failures"])
+
+    def test_marker_rejects_non_cancel_specs_and_non_boolean_values(self):
+        mutations = [
+            lambda s: s.update(response_mode="json"), lambda s: s.pop("cancel_after_bytes"),
+            lambda s: s.update(cancel_after_bytes=0), lambda s: s.update(cancel_after_bytes=True),
+            lambda s: s["expected"].update(negative=True, statuses=[503]),
+            lambda s: s["expected"].update(statuses=[200, 503]),
+            lambda s: s["expected"].update(allow_cancelled_http_server_errors="true"),
+            lambda s: s["expected"].update(allow_cancelled_http_server_errors=1),
+            lambda s: s["expected"].update(allow_cancelled_http_server_errors=None),
+        ]
+        for index, mutate in enumerate(mutations):
+            with self.subTest(index=index):
+                spec = cancelled_ai_fixture()[0]
+                mutate(spec)
+                with self.assertRaisesRegex(AcceptanceError, "INVALID_CANCELLED_HTTP_ERROR_EXPECTATION"):
+                    validate_spec(spec)
+
+    def test_missing_transport_evidence_never_classifies_server_errors_as_cancellation(self):
+        mutations = [
+            lambda r: r.update(sent=False), lambda r: r.update(completed=False),
+            lambda r: r.update(http_status=503), lambda r: r.update(http_status="200"),
+            lambda r: r.update(client_cancelled=False), lambda r: r.pop("sse_evidence"),
+            lambda r: r["sse_evidence"].update(data_received=False),
+            lambda r: r["sse_evidence"].update(explicit_error=True),
+            lambda r: r["sse_evidence"].update(explicit_complete=True),
+            lambda r: r["sse_evidence"].update(response_complete=True),
+            lambda r: r["sse_evidence"].update(client_closed=False),
+            lambda r: r["sse_evidence"].update(client_closed=1),
+            lambda r: r["sse_evidence"].pop("client_closed"),
+            lambda r: r.update(client_cancelled=1),
+        ]
+        for index, mutate in enumerate(mutations):
+            with self.subTest(index=index):
+                spec, record, spans, logs = cancelled_ai_fixture()
+                mutate(record)
+                result = reconcile(spec, record, spans, logs, {TRACE})
+                self.assertFalse(result["passed"])
+                self.assertIn("TRACE_ERROR_STATUS", result["failures"])
+
+    def test_error_span_and_unique_log_must_prove_http_200_io_abort_on_same_route(self):
+        mutations = [
+            lambda ss, ls: ss.__setitem__(2, replace(ss[2], kind=3)),
+            lambda ss, ls: ss[2].attrs.update({"http.response.status_code": 503}),
+            lambda ss, ls: ss[2].attrs.update({"http.response.status_code": "200"}),
+            lambda ss, ls: ss[2].attrs.pop("http.response.status_code"),
+            lambda ss, ls: ss[2].attrs.update({"http.status_code": 503}),
+            lambda ss, ls: ss[2].attrs.pop("http.request.method"),
+            lambda ss, ls: ls[1].update(http_status=503),
+            lambda ss, ls: ls[1].update(http_status="200"),
+            lambda ss, ls: ls[1].update(outcome="failure"),
+            lambda ss, ls: ls[1].update(error_type="timeout"),
+            lambda ss, ls: ls[1].pop("error_type"),
+            lambda ss, ls: ls[1].update(http_route="/different"),
+            lambda ss, ls: ls[1].pop("http_route"),
+            lambda ss, ls: ss[2].attrs.pop("http.route"),
+            lambda ss, ls: ls.pop(1), lambda ss, ls: ls.append(deepcopy(ls[1])),
+            lambda ss, ls: ls[1].update(span_id="9999999999999999"),
+            lambda ss, ls: ls[1]["Resource"].update({"service.name": "ai-agent"}),
+            lambda ss, ls: ls[1].update(TraceId="99999999999999999999999999999999"),
+            lambda ss, ls: ls[1].update(SpanId="9999999999999999"),
+        ]
+        for index, mutate in enumerate(mutations):
+            with self.subTest(index=index):
+                spec, record, spans, logs = cancelled_ai_fixture()
+                mutate(spans, logs)
+                result = reconcile(spec, record, spans, logs, {TRACE})
+                self.assertFalse(result["passed"])
+                self.assertIn("TRACE_ERROR_STATUS", result["failures"])
+
+    def test_business_terminals_must_be_cancelled_nonfinal_and_in_the_same_ancestry(self):
+        mutations = [
+            lambda ss, ls: ss[3].attrs.update({"business.outcome": "success"}),
+            lambda ss, ls: ss[8].attrs.update(outcome="success"),
+            lambda ss, ls: ss[9].attrs.update(outcome="success"),
+            lambda ss, ls: ss[9].attrs.update({"fleet.ai.usage.final": True}),
+            lambda ss, ls: ss[9].attrs.update({"fleet.ai.usage.final": 0}),
+            lambda ss, ls: ss[9].attrs.pop("fleet.ai.usage.final"),
+            lambda ss, ls: ss.__setitem__(3, replace(ss[3], status_error=True)),
+            lambda ss, ls: ss.__setitem__(8, replace(ss[8], status_error=True)),
+            lambda ss, ls: ss.__setitem__(9, replace(ss[9], status_error=True)),
+            lambda ss, ls: ss.__setitem__(3, replace(ss[3], parent=ss[0].span)),
+            lambda ss, ls: ss.__setitem__(7, replace(ss[7], parent=ss[1].span)),
+            lambda ss, ls: ss.__setitem__(8, replace(ss[8], parent=ss[3].span)),
+            lambda ss, ls: ss.__setitem__(9, replace(ss[9], parent=ss[3].span)),
+            lambda ss, ls: ss.append(replace(ss[9], span="9999999999999999")),
+            lambda ss, ls: ss.pop(9), lambda ss, ls: ls.pop(),
+            lambda ss, ls: ls[-1].update(outcome="success"),
+            lambda ss, ls: ls.append(deepcopy(ls[-1])),
+            lambda ss, ls: ls.append({**deepcopy(ls[-1]), "outcome": "success"}),
+            lambda ss, ls: ls[-1]["Resource"].update({"service.name": "ai"}),
+            lambda ss, ls: ls[-1]["Resource"].update({"service.version": "9.9.9"}),
+            lambda ss, ls: ls[-1]["Resource"].update({"deployment.environment.name": "other"}),
+        ]
+        for index, mutate in enumerate(mutations):
+            with self.subTest(index=index):
+                spec, record, spans, logs = cancelled_ai_fixture()
+                mutate(spans, logs)
+                result = reconcile(spec, record, spans, logs, {TRACE})
+                self.assertFalse(result["passed"])
+                self.assertIn("TRACE_ERROR_STATUS", result["failures"])
+
+    def test_other_errors_and_missing_parents_edges_versions_still_fail(self):
+        for index in (0, 4, 10, 17):
+            with self.subTest(error_span=index):
+                spec, record, spans, logs = cancelled_ai_fixture()
+                spans[index] = replace(spans[index], status_error=True)
+                result = reconcile(spec, record, spans, logs, {TRACE})
+                self.assertFalse(result["passed"])
+                self.assertIn("TRACE_ERROR_STATUS", result["failures"])
+        for index, reason in ((1, "SPAN_PARENT_MISSING"), (6, "CROSS_SERVICE_PARENT_MISMATCH")):
+            with self.subTest(missing_span=index):
+                spec, record, spans, logs = cancelled_ai_fixture()
+                spans.pop(index)
+                result = reconcile(spec, record, spans, logs, {TRACE})
+                self.assertFalse(result["passed"])
+                self.assertIn(reason, result["failures"])
+        spec, record, spans, logs = cancelled_ai_fixture()
+        spans[2] = replace(spans[2], version="9.9.9")
+        result = reconcile(spec, record, spans, logs, {TRACE})
+        self.assertFalse(result["passed"])
+        self.assertIn("RESOURCE_VERSION_MISMATCH", result["failures"])
 
 
 class FixtureBackend:

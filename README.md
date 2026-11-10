@@ -238,3 +238,5 @@ AI的模型调用单独建`ai.model.call`子span，记忆/RAG编排与模型计�
 在Grafana“探索”选择Elasticsearch，查询`Resource.service.name:"rag" AND event:"http.server.exchange"`；生成的`summary`显示可读信息，展开条目查看安全`request_body/response_body`、省略原因及`trace_id`链接。Jaeger v3原生UI可按服务/时间检索整条链。实际验收工具是`scripts/acceptance_run.py`，默认只计划，显式`--execute`才发清单；`--readback-ledger`仅重查已发Trace，避免重复调用模型。
 
 请求清单可用 `accept` 独立指定请求媒体类型，仅接受精确的 `application/json` 或 `text/event-stream`；省略时仍按 `response_mode` 保持原默认值。`response_mode` 只决定响应证据的判读方式。例如 SSE 聊天入口的未登录负例应使用 `"accept":"text/event-stream"`、`"response_mode":"json"`，并明确 `expected.negative=true` 与 `expected.statuses=[401]`；这使请求媒体类型符合目标 SSE 入口，也能判读 401 空响应。该设置不放宽 200 SSE 的业务成功／取消要求，仍须按实际终态、业务 span 和日志逐项验收。
+
+主动取消的 AI SSE 清单可显式设置 `expected.allow_cancelled_http_server_errors=true`，默认关闭。它只分类 AI／Agent 的 HTTP SERVER 断连：实际客户端已收到数据并主动关闭、HTTP 200、没有 EOF／完成／错误事件，且同一真实祖先链上的三层业务 span 均为取消、模型 `fleet.ai.usage.final=false`。每个候选 HTTP span 还必须有唯一同 trace/span、版本与环境一致的 `http.server.exchange`，严格匹配 200、`outcome=cancelled`、`error_type=io` 和框架路由；模型也须有唯一同身份的取消日志。其它服务、CLIENT、HTTP 错误、模型完成、用量 final 类型错误、日志缺失或重复均不适用；父 span、跨服务调用边、完整路径及版本校验始终保留。部分用量可用于诊断，不能当作最终用量、账单或供应商后台停止生成的保证。

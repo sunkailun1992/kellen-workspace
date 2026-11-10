@@ -289,6 +289,12 @@ def validate_spec(spec: dict) -> None:
         raise AcceptanceError("INVALID_SAFE_MANIFEST_METADATA")
     expected = spec.get("expected", {})
     services = expected.get("services", [])
+    cancel_errors = expected.get("allow_cancelled_http_server_errors", False)
+    if (type(cancel_errors) is not bool or cancel_errors and (
+            spec.get("response_mode") != "sse" or type(spec.get("cancel_after_bytes")) is not int
+            or spec["cancel_after_bytes"] <= 0 or expected.get("negative")
+            or expected.get("statuses") != [200] or not {"ai", "ai-agent"} <= set(services))):
+        raise AcceptanceError("INVALID_CANCELLED_HTTP_ERROR_EXPECTATION")
     if not services or len(set(services)) != len(services) or not set(services) <= SERVICES or spec.get("entry_service") not in services:
         raise AcceptanceError("INVALID_EXPECTED_SERVICES")
     if not expected.get("statuses") or any(type(x) is not int or not 100 <= x <= 599 for x in expected["statuses"]):
@@ -344,6 +350,91 @@ def _protocol(span: Span, protocol: str) -> bool:
     return protocol == "http" and ("http.request.method" in span.attrs or "http.method" in span.attrs)
 
 
+def _cancelled_http_server_errors(spec: dict, record: dict, actual: dict[str, Span], logs: list[dict]) -> set[str]:
+    """只分类已证实的客户端取消；HTTP 错误、模型完成或其它分支不能借此通过。"""
+    if (spec["expected"].get("allow_cancelled_http_server_errors") is not True
+            or spec.get("response_mode") != "sse" or type(spec.get("cancel_after_bytes")) is not int
+            or spec["cancel_after_bytes"] <= 0 or spec["expected"].get("negative")
+            or record.get("sent") is not True or record.get("completed") is not True
+            or type(record.get("http_status")) is not int or record["http_status"] != 200
+            or record.get("client_cancelled") is not True
+            or not sse_business_confirmed(spec, record, actual, logs, set())):
+        return set()
+    business = []
+    for service, name, key in (("ai", "ai.dialogue.stream", "business.outcome"),
+                               ("ai-agent", "ai.agent.execution", "outcome"), ("ai-agent", "ai.model.call", "outcome")):
+        matching = [s for s in actual.values() if s.service == service and s.name == name]
+        if len(matching) != 1 or matching[0].status_error or matching[0].attrs.get(key) != "cancelled":
+            return set()
+        business.append(matching[0])
+    dialogue, execution, model = business
+    if model.attrs.get("fleet.ai.usage.final") is not False:
+        return set()
+
+    def terminal_log(span: Span, event: str) -> dict | None:
+        matching = []
+        for log in logs:
+            if log_field(log, "event") != event:
+                continue
+            try:
+                if log_identity(log) == (span.trace, span.span):
+                    matching.append(log)
+            except AcceptanceError:
+                continue
+        if len(matching) != 1:
+            return None
+        log = matching[0]
+        try:
+            if any(field(log, key) is not None and identity(field(log, key), width) != value
+                   for key, width, value in (("TraceId", 16, span.trace), ("SpanId", 8, span.span))):
+                return None
+        except AcceptanceError:
+            return None
+        resource = tuple(field(log, "Resource." + key, log_field(log, key)) for key in (
+            "service.name", "service.version", "deployment.environment.name"))
+        return log if resource == (span.service, span.version, span.environment) else None
+
+    model_log = terminal_log(model, "ai.model.call")
+    if model_log is None or log_field(model_log, "outcome") != "cancelled":
+        return set()
+
+    def descendant(child: Span, ancestor: Span) -> bool:
+        seen = {child.span}
+        while child.parent in actual and child.parent not in seen:
+            child = actual[child.parent]
+            if child.span == ancestor.span:
+                return True
+            seen.add(child.span)
+        return False
+
+    pairs = []
+    for service, terminal in (("ai", dialogue), ("ai-agent", execution)):
+        matching = [s for s in actual.values() if s.service == service and s.kind == 2
+                    and _protocol(s, "http") and descendant(terminal, s)]
+        if len(matching) != 1:
+            return set()
+        pairs.append(matching[0])
+    if not descendant(pairs[1], dialogue) or not descendant(model, execution):
+        return set()
+
+    classified = set()
+    for span in pairs:
+        statuses = [span.attrs[key] for key in ("http.response.status_code", "http.status_code") if key in span.attrs]
+        route = span.attrs.get("http.route")
+        if (not statuses or any(type(status) is not int or status != 200 for status in statuses)
+                or not isinstance(route, str) or not SAFE_ROUTE.fullmatch(route)):
+            continue
+        log = terminal_log(span, "http.server.exchange")
+        if log is None:
+            continue
+        if (type(log_field(log, "http_status")) is not int or log_field(log, "http_status") != 200
+                or log_field(log, "outcome") != "cancelled" or log_field(log, "error_type") != "io"
+                or log_field(log, "http_route") != route):
+            continue
+        classified.add(span.span)
+    return classified
+
+
 def reconcile(spec: dict, record: dict, spans: list[Span], logs: list[dict], search_ids: set[str], forbidden_values: tuple[str, ...] = ()) -> dict:
     """每个请求独立 fail closed；缺一条 parent、一次终态或版本都不能用其它请求补齐。"""
     failures: set[str] = set()
@@ -369,8 +460,9 @@ def reconcile(spec: dict, record: dict, spans: list[Span], logs: list[dict], sea
         failures.add("EXPECTED_SERVICE_MISSING")
     if set(expected.get("forbidden_services", [])) & observed_services:
         failures.add("FORBIDDEN_SERVICE_OBSERVED")
+    cancelled_errors = _cancelled_http_server_errors(spec, record, actual, logs)
     for span in actual.values():
-        if span.status_error and not expected.get("negative"):
+        if span.status_error and not expected.get("negative") and span.span not in cancelled_errors:
             failures.add("TRACE_ERROR_STATUS")
         if span.sampled is False:
             failures.add("UNSAMPLED_STORED_SPAN")
