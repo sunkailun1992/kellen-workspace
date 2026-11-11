@@ -7,6 +7,7 @@
 - 存储连接与业务凭据由 AI DB 控制面管理。`GITHUB_MINIO_*`、OSS/COS/S3/storage 家族及旧 Aliyun 存储 access key 不再写入任何服务的受管 application.properties。
 - 公开模板中的 Google/DeepSeek/Qwen 变量只分发给 ai-agent；RAG Qwen embedding/Engine 变量只分发给 rag。没有声明消费者的 `GITHUB_*_API_KEY` 默认不广播。数据库、JWT/HMAC 及其它现行基础配置本批保持原行为，不宣称已完成所有凭据的独立治理。
 - `AI_STORAGE_KEK_B64`、`AI_STORAGE_KEK_ID`、`AI_STORAGE_ALLOWED_ORIGINS` 和 `AI_MODELCONTROLPLANE_APIBASEURL`、`AI_MODELCONTROLPLANE_APIKEY`、`AI_MODELCONTROLPLANE_CONSOLEBASEURL` 只允许 AI 的私有 OS 环境输入。KEK 不进入 application.properties、JVM `-D`、业务参数、IDE XML 值、Git 或启动回执。
+- `AI_MODELCONTROLPLANE_VERIFICATIONFILE` 可为 AI 指定本机脱敏验收文件的绝对路径。页面将历史结果和时间关联到同一模型部署，文件应通过实际验收生成。
 - 环境文件可以提供当前消费方的真实 provider key 或 LiteLLM 应用 key；入口不执行模型调用、不自动更改 Nacos、不推定业务已切换到 LiteLLM。
 
 代码策略在 `scripts/service_runtime_environment.py`。名称区别于本机临时运维 helper，避免动态导入时与其它同名 `service_environment` 模块冲突。
@@ -24,7 +25,8 @@ AI 文件示意（仅键与占位符；真实值不能粘进对话或 Git）：
   "AI_STORAGE_ALLOWED_ORIGINS": "<approved-storage-origin>",
   "AI_MODELCONTROLPLANE_APIBASEURL": "<catalog-api-base-url>",
   "AI_MODELCONTROLPLANE_APIKEY": "<catalog-read-key>",
-  "AI_MODELCONTROLPLANE_CONSOLEBASEURL": "<native-console-base-url>"
+  "AI_MODELCONTROLPLANE_CONSOLEBASEURL": "<native-console-base-url>",
+  "AI_MODELCONTROLPLANE_VERIFICATIONFILE": "/secure/model-verification.json"
 }
 ```
 

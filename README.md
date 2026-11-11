@@ -31,7 +31,7 @@ python3 scripts/prepare-observed.py configure \
 
 ### 每服务 OS 环境与控制面凭据
 
-存储凭据不再由全量 `GITHUB_*` properties 广播给九个服务；模型变量只给实际 Agent/RAG 消费者。AI 的 KEK 和模型只读 portal 六个 OS 键可以通过 owner-only 私有 JSON 与可选 service_envs 路径绑定接入，三键旧绑定继续兼容。KEY 不进入 JVM `-D`、公共回执或 IDE XML 值；未知用户 env 文件不自动接管。原生 envFilePaths 无需额外插件，源码支持与实际 IDE 应用分别验收。完整输入合同、CLI、继承边界和 plan/CAS 见 [服务启动凭据边界](docs/service-environment.md)。
+存储凭据不再由全量 `GITHUB_*` properties 广播给九个服务；模型变量只给实际 Agent/RAG 消费者。AI 的存储加密配置、只读模型目录和可选实测文件路径通过 owner-only 私有 JSON 与 `service_envs` 路径绑定接入，三键旧绑定继续兼容。KEY 不进入 JVM `-D`、公共回执或 IDE XML 值；未知用户 env 文件不自动接管。原生 envFilePaths 无需额外插件，源码支持与实际 IDE 应用分别验收。完整输入合同、CLI、继承边界和 plan/CAS 见 [服务启动凭据边界](docs/service-environment.md)。
 
 ### IDEA原生Spring Boot/Application入口
 

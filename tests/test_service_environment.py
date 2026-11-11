@@ -49,8 +49,14 @@ class ServiceEnvironmentTests(unittest.TestCase):
                 self.path.write_bytes(raw)
                 with self.assertRaises(service.EnvironmentError):service.load_service_environment(self.path,'ai')
     def test_foreign_service_never_receives_ai_keys_and_only_known_model_consumers_allowed(self):
-        for name in ['gateway','user','ai-agent','rag','ai-memory','mcp','message','report']:
-            with self.assertRaises(service.EnvironmentError):service.load_service_environment(self.path,name)
+        key='AI_MODELCONTROLPLANE_VERIFICATIONFILE'
+        value=str(self.root/'model-verification.json')
+        self.save({key:value})
+        self.assertEqual(service.load_service_environment(self.path,'ai')[0],{key:value})
+        for payload in (self.values,{key:value}):
+            self.save(payload)
+            for name in ['gateway','user','ai-agent','rag','ai-memory','mcp','message','report']:
+                with self.assertRaises(service.EnvironmentError):service.load_service_environment(self.path,name)
         self.save({'GITHUB_GOOGLE_API_KEY':'synthetic-agent-model'})
         service.load_service_environment(self.path,'ai-agent')
         with self.assertRaises(service.EnvironmentError):service.load_service_environment(self.path,'rag')
