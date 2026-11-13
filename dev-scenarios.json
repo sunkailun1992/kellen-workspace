@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "scenarios": {
+    "workspace-fixtures": {
+      "description": "用临时 Git 仓库和合成 IDEA 配置验证工作区初始化、状态、更新保护与导入规则。",
+      "wikiRefs": ["个人区/编程/wiki/repos/Java微服务基础仓库.md"],
+      "notCovered": ["12 个真实子仓的构建和业务测试", "IDEA 实际导入及服务启动"],
+      "checks": [
+        {
+          "name": "workspace-fixtures",
+          "repo": "workspace",
+          "argv": ["python3", "-B", "-m", "unittest", "discover", "-s", "tests", "-p", "test_workspace.py", "-v"],
+          "timeoutSeconds": 120
+        }
+      ]
+    },
+    "conductor-document-fixture": {
+      "description": "用合成文档、临时 SQLite 和本机回环 HTTP 验证 Conductor 文档演示的任务日志、重试、恢复和幂等。",
+      "wikiRefs": ["个人区/编程/wiki/topics/JavaAI编排框架选型.md"],
+      "notCovered": ["已部署的 Conductor、数据库或调度器的运行状态", "真实文档、检索或模型调用"],
+      "checks": [
+        {
+          "name": "conductor-document-fixture",
+          "repo": "workspace",
+          "argv": ["python3", "-B", "-m", "unittest", "discover", "-s", "tests", "-p", "test_conductor_demo.py", "-v"],
+          "timeoutSeconds": 45
+        }
+      ]
+    }
+  }
+}

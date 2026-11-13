@@ -14,6 +14,9 @@
 # 已移出整合范围的历史移动端目录仍须忽略；不删除独立checkout或链接。
 /ai-wechat-mini-programs
 /.workspace-clone-*/
+/.workspace-local/
+/.issuerelay/
+/dev-scenarios.local.json
 
 # 本机IDE、构建和运行状态；.run/共享入口保留跟踪。
 /.idea/

@@ -20,5 +20,10 @@
 - 维护者本人，以及维护者本机用维护者账号运行的Claude/Codex会话，可以直接合并到`main`：合并前本机验证命令全过，合并后看CI，红了马上修。推送后读回精确提交的CI结论。
 - 云端会话（`CLAUDE_CODE_REMOTE=true`，或会话里没有本机配置）只推会话分支，由维护者或本机会话合并。其他人的代码走PR：CI全绿、维护者审核批准、评审对话解决后再合并。代理不修改ruleset与仓库权限，除非用户当场明确要求。
 - 编译、脚本测试、IDE导入、CI、部署与运行态验收分别记录，不能互相代替。
+- 本机自动验收以 `dev-scenarios.json` 为场景清单。Codex、Claude 和 IssueRelay 先运行 `python3 scripts/dev-verify.py plan <场景>`，再按任务范围执行 `run` 并附上 JSON 回执。新增场景应复用仓内可重复的检查，记录 Wiki 参考与未覆盖范围；个人场景不引用公司仓库、配置或数据。
 
 - 服务 OS 环境输入按 `docs/service-environment.md` 的私有 JSON/每服务 allowlist 准备；AI KEK 只能走本服务 OS env，不进 properties、JVM-D、argv、Git 或 IDE XML 值。原生 envFilePaths 只保存路径，未知用户 env 文件保留并拒绝接管；不把源码支持等同实际 IDE 已应用。
+## 会话材料与本机仓库引用
+
+- IssueRelay 任务上下文、用户会话、交接原文、日志、截图、回执、本机绝对路径和仓库映射只放在本机忽略目录或 Git 之外，不加入暂存区。长期 Wiki 仅按其规则保存经授权的脱敏证据。
+- 任务跨出固定清单时，可在本机提供 `--repo-map` 和私有场景。它们只扩展当前任务的本地验证范围，既有 bootstrap、Git 远端规则和各仓授权仍适用。

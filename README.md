@@ -221,6 +221,21 @@ git -C utils push
 
 ## 验证与CI边界
 
+Codex、Claude 和 IssueRelay 可使用同一套本机验收命令：
+
+```bash
+python3 scripts/dev-verify.py list
+python3 scripts/dev-verify.py plan workspace-fixtures
+python3 scripts/dev-verify.py run workspace-fixtures
+python3 scripts/dev-verify.py run conductor-document-fixture
+```
+
+`workspace-fixtures` 使用临时 Git 仓库和合成 IDEA 配置。`conductor-document-fixture` 使用本机回环 HTTP、临时 SQLite 和合成文档，验证任务日志、失败、恢复和幂等。两个场景都只需要本仓库源码、Git 和 Python 3.10+，无需先下载 12 个子仓、准备 JDK 或配置私有服务凭据。它们的回执分别证明对应的本机合成检查结果。真实子仓构建、IDEA 导入、已部署 Conductor 与实际业务链路仍各自验收。
+
+在 IssueRelay 任务中给出工作区、场景和验收条件。先读 `plan` 输出，再执行 `run`，从 JSON 的 `receiptPath` 取得回执并附上需要的日志。任务可用 `--expect workspace=<完整提交 SHA>` 核对 HEAD。要验收某个提交的原始内容，应在干净的隔离 checkout 执行，并核对回执中的 `dirty`。场景如需另一个目录下的子仓，可指定 `--checkout-root`。
+
+[`dev-scenarios.json`](dev-scenarios.json) 记录各场景的 Wiki 参考、实际检查及未覆盖范围。扩展时优先复用已有命令，以 `argv` 数组声明参数，为每项设置超时，选用合成输入并写清验收范围。
+
 本地脚本测试与语法检查：
 
 ```bash
@@ -237,6 +252,27 @@ WORKSPACE_GRADLE_TESTS=1 python3 -m unittest discover -s tests -p test_composite
 GitHub Actions在`main`、`test`、`preprod`推送及面向`main`的PR上运行，也支持手动触发。CI分别运行脚本测试，以及Gradle临时fixture、真实公开清单下载、JDK 17下的`verifyWorkspace`和`compileAllJava`。
 
 根`compileAllJava`默认只编译Java源码，不运行子仓业务测试、不启动服务、不发布远端制品。编译通过不能代表子仓业务测试通过。IDEA实际导入、业务测试、部署和运行态验收需要分别确认，并以对应仓库本轮实际检查结果为准。
+
+### 本机跨仓映射和私有任务材料
+
+稳定、无私密数据的验证可以放在 `dev-scenarios.json`。只对一条需求有用的检查放到忽略目录 `.workspace-local/`，通过 `--local-scenarios` 指定。文件格式与正式清单一致，名称必须唯一。工单简报、会话历史、日志、截图、回执、绝对路径和本机仓库映射都留在本机。默认回执写入忽略的 `build/dev-verify/`。自定义目录必须在 Git 之外，或已经被忽略且未跟踪。
+
+清单外的仓库通过 `--repo-map .workspace-local/repos.json` 显式绑定。映射格式如下，替换占位路径和 origin 后保存到本机。
+
+```json
+{
+  "schemaVersion": 1,
+  "repositories": {
+    "reference-project": {
+      "path": "/path/to/independent-checkout",
+      "origin": "https://github.com/example/reference-project.git",
+      "readOnly": true
+    }
+  }
+}
+```
+
+`python3 scripts/dev-verify.py --repo-map .workspace-local/repos.json inspect reference-project` 校验本机目录是独立 Git 根、origin 一致，并显示当前 SHA 和工作树状态。要把这份证据纳入一个场景，把仓库别名填到该场景的 `references`。其他 GitHub 所有者的项目只能作为只读参考。先用已获授权的 GitHub 读取方式或本机检出查看源码。自有同账号仓库需要执行本机检查时，可明确设置 `readOnly: false`。 映射仅供本机识别和验证，检出、改动及发布仍按各仓规则和工单范围执行。
 
 ## 本机文件与隐私
 
