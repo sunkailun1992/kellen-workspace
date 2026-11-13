@@ -1,6 +1,6 @@
 # Gateway 与 Dubbo 灰度配置与验收
 
-默认关闭。各环境独立密钥，启动参数和 Nacos 只引用密钥管理器注入的 `TRAFFIC_CANARY_SIGNING_KEY`。稳定实例继续用原服务名与无标签 RPC。灰度 HTTP 实例注册到同一 namespace，服务名使用 `<稳定服务名>-canary-<标签>`。灰度 RPC 实例保留同一业务接口，按发布组使用静态标签。
+默认关闭。各环境独立密钥，启动参数和 Nacos 只引用密钥管理器注入的 `TRAFFIC_CANARY_SIGNING_KEY`。个人 github-dev 本机灰度是例外：密钥放在私有 `dev.env` 的 `GITHUB_PERSONAL_CANARY_SIGNING_KEY`，发布时渲染写入 Nacos `local-canary.yaml`，缺失则渲染失败、不发布空密钥（见 `utils/ops/github-dev/README.md`）。稳定实例继续用原服务名与无标签 RPC。灰度 HTTP 实例注册到同一 namespace，服务名使用 `<稳定服务名>-canary-<标签>`。灰度 RPC 实例保留同一业务接口，按发布组使用静态标签。
 
 ## 入口和下游
 
@@ -21,7 +21,7 @@ traffic:
 
 Message 灰度进程配置 `spring.cloud.nacos.discovery.service=message-canary-blue`。其 `traffic.governance.canary` 下设置 `enabled: true`、`service: message`、`http-tag: blue`、`require-grant: true`、`signing-key: ${TRAFFIC_CANARY_SIGNING_KEY:}`。这些值只给灰度部署实例，稳定实例使用默认配置。敏感接口应限制灰度端口网络可达范围。
 
-调用方通过 `@DubboReference(parameters = {"traffic.canary.enabled", "true"})` 显式启用参与灰度的引用。保持 registry-backed，禁止配置 Dubbo mock、injvm 或业务回落。User 灰度进程配置 `dubbo.provider.tag=blue`，启用同一密钥并要求凭据。为指定 RPC 接口配置允许签发时的入口服务名。
+调用方通过 `@DubboReference(parameters = {"traffic.canary.enabled", "true"})` 显式启用参与灰度的引用。保持 registry-backed，禁止配置 Dubbo mock、injvm 或业务回落。User 灰度进程配置 `dubbo.provider.tag=blue`，启用同一密钥并要求凭据。为指定 RPC 接口配置允许签发时的入口服务名。提供方校验需要 `com:utils` 1.6.7 及以上：更早版本的 `DubboContextPropagationFilter` 拿不到 Spring 绑定的配置，会拒绝全部灰度凭据，`require-grant` 也不生效。
 
 ```yaml
 traffic:
@@ -41,5 +41,6 @@ traffic:
 
 - 普通请求命中原服务，裸路由头不会改变目标。伪造、重复、过期或范围错误的凭据应返回 403。原业务认证头保留。
 - 合法凭据命中映射的 Nacos 服务名，匹配 Dubbo 静态标签。HTTP 无实例返回 503。Dubbo 无匹配 provider 或发生动态规则冲突时不会向稳定端发送 RPC。
+- 入口、Dubbo 调用方和提供方每一跳都按当前时间校验凭据是否过期，整个请求连同下游 RPC 必须在凭据有效期内发出；超过有效期的长请求（如多轮 Agent 调用）会在中途被拒。
 - 先停止签发灰度凭据并等待存量结束，再摘除灰度服务注册。确认普通调用走原目标之后，关闭灰度映射。启动灰度前检查全部 HTTP 路由、Dubbo 订阅、后台任务、数据库迁移、消息消费和数据兼容性。
 - 个人链路关联在 Jaeger 原生搜索用 `traffic.route.mode=canary` 和 `traffic.route.decision=unavailable`。Grafana Explore 选个人 Elasticsearch 数据源，用 `event:"traffic.route.decision" AND traffic_route_mode:"canary"`。精确对照失败路径用 `trace_id:"<TRACE_ID>"`。日志字段为有限枚举，凭据、身份、URL 和地址不入事件。
