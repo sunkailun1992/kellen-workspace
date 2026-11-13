@@ -23,7 +23,9 @@
 - 本机自动验收以 `dev-scenarios.json` 为场景清单。Codex、Claude 和 IssueRelay 先运行 `python3 scripts/dev-verify.py plan <场景>`，再按任务范围执行 `run` 并附上 JSON 回执。新增场景应复用仓内可重复的检查，记录 Wiki 参考与未覆盖范围；个人场景不引用公司仓库、配置或数据。
 
 - 服务 OS 环境输入按 `docs/service-environment.md` 的私有 JSON/每服务 allowlist 准备；AI KEK 只能走本服务 OS env，不进 properties、JVM-D、argv、Git 或 IDE XML 值。原生 envFilePaths 只保存路径，未知用户 env 文件保留并拒绝接管；不把源码支持等同实际 IDE 已应用。
+
 ## 会话材料与本机仓库引用
 
-- IssueRelay 任务上下文、用户会话、交接原文、日志、截图、回执、本机绝对路径和仓库映射只放在本机忽略目录或 Git 之外，不加入暂存区。长期 Wiki 仅按其规则保存经授权的脱敏证据。
+- 将原始对话、个人观点、讨论草稿和提示词、任务上下文与交接原文、真实身份与凭据、原始日志和截图、私有引用、验收回执、本机绝对路径及仓库映射留在 Git 之外或已忽略的本机目录。工作区用 `.workspace-local/` 存映射与私有场景，`.issuerelay/` 存任务材料，`.remember/` 存本机记忆，`.conversation/` 存会话，`.handoff-local/` 存交接，`build/dev-verify/` 存回执。长期 Wiki 仅按其规则保存经授权的脱敏证据。
+- Git 只提交有权共享的源码、项目规范、技术文档和合成测试资料。不得把私有原文转贴到跟踪文件、提交信息或 PR。用精确路径暂存，提交前检查 `git diff --cached --name-only` 和 `git diff --cached`。用 `git ls-files` 核对私有目录没有已跟踪条目，因为 `.gitignore` 不影响已有跟踪文件。不得用 `git add -f` 绕过忽略规则。若发现已跟踪的私有资料，停止提交和推送，先报告范围再处理。
 - 任务跨出固定清单时，可在本机提供 `--repo-map` 和私有场景。它们只扩展当前任务的本地验证范围，既有 bootstrap、Git 远端规则和各仓授权仍适用。
