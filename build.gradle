@@ -23,7 +23,7 @@ tasks.register('verifyWorkspace') {
             throw new GradleException("Java 构建与清单不一致：expected=${expected}, actual=${actual}")
         }
         logger.lifecycle("Verified ${actual.size()} Java included builds: ${javaRepositories*.name.join(', ')}")
-        logger.lifecycle('SDK substitution: com:utils -> :utils, com:rpc-api -> :rpc-api, com:fleet-observability -> :utils:fleet-observability (workspace only)')
+        logger.lifecycle('SDK substitution: com:utils -> :utils, com:rpc-api -> :rpc-api, com:fleet-observability -> :utils:fleet-observability, com:traffic-canary -> :utils:traffic-canary (workspace only)')
     }
 }
 

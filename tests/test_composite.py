@@ -125,6 +125,14 @@ tasks.register('plainJava', JavaExec)
                     lightweight_source = lightweight / "src/main/java/fixture"
                     lightweight_source.mkdir(parents=True)
                     (lightweight_source / "FleetObservation.java").write_text("package fixture; public class FleetObservation {}\n")
+                    with (path / "settings.gradle").open("a") as stream:
+                        stream.write("include 'traffic-canary'\n")
+                    canary = path / "traffic-canary"
+                    canary.mkdir()
+                    (canary / "build.gradle").write_text("plugins { id 'java-library' }\ngroup = 'com'\nversion = '1.0'\n")
+                    canary_source = canary / "src/main/java/fixture"
+                    canary_source.mkdir(parents=True)
+                    (canary_source / "CanaryRouting.java").write_text("package fixture; public class CanaryRouting {}\n")
             else:
                 (source / "App.java").write_text("package fixture; public class App { Utils u; RpcApi r; }\n")
                 with (path / "build.gradle").open("a") as f:
@@ -210,6 +218,29 @@ tasks.register('assertLightweightWorkspace') {
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn('VERIFIED lightweight source subproject; company module retained', result.stdout)
         self.assertTrue((self.root / 'utils/fleet-observability/build/classes/java/main/fixture/FleetObservation.class').is_file())
+
+    def test_traffic_canary_uses_utils_subproject_without_maven_local(self):
+        self.create_builds()
+        (self.root / "gateway/src/main/java/fixture/GatewayCanary.java").write_text("package fixture; public class GatewayCanary { CanaryRouting routing; }\n")
+        with (self.root / "gateway/build.gradle").open("a") as stream:
+            stream.write("""
+dependencies {
+    implementation 'com:traffic-canary:999.0'
+}
+tasks.register('assertCanaryWorkspace') {
+    doLast {
+        def dependency = configurations.compileClasspath.incoming.resolutionResult.allDependencies
+                .find { it.requested.displayName == 'com:traffic-canary:999.0' }
+        assert dependency.selected.id instanceof org.gradle.api.artifacts.component.ProjectComponentIdentifier
+        assert dependency.selected.id.projectPath == ':traffic-canary'
+        println 'VERIFIED traffic-canary source subproject'
+    }
+}
+""")
+        result = self.gradle(':gateway:compileJava', ':gateway:assertCanaryWorkspace')
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn('VERIFIED traffic-canary source subproject', result.stdout)
+        self.assertTrue((self.root / 'utils/traffic-canary/build/classes/java/main/fixture/CanaryRouting.class').is_file())
 
     def test_symlinked_build_uses_target_working_directory(self):
         self.create_builds()

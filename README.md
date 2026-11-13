@@ -253,7 +253,7 @@ GitHub Actions在`main`、`test`、`preprod`推送及面向`main`的PR上运行�
 
 github-dev使用`always_on`，包括收到`traceparent`中sampled=0的请求，保留原Trace/parent并向下游传播采样标记；旧`FLEET_TRACE_RATIO`不再控制此环境。Java隐私扩展0.1.2在实际exporter前保留有限GenAI模型/Prompt版本/供应商报告用量与Dubbo协议元数据，继续清除原始异常、SQL、URL、模型正文和未知属性。完整Trace以验收请求清单逐项读回为准，100%采样不能替代存储持久化保证。
 
-普通HTTP请求通过`com:fleet-observability:0.1.2`统一输出`event=http.server.exchange`：方法、框架路由模板、状态、耗时、真实读写字节、完整性、结果及同Trace/Span标识。每体最多8192字节，仅对路由/类型白名单作投影；未知或无效JSON整段省略，不截出原始前缀。SSE、二进制和AI HTTP正文不缓存。`request_body_omitted/response_body_omitted`明确省略原因；完整性为false或未知字节不代表空体。
+普通HTTP请求通过`com:fleet-observability`（当前0.1.4，由utils传递）统一输出`event=http.server.exchange`：方法、框架路由模板、状态、耗时、真实读写字节、完整性、结果及同Trace/Span标识。每体最多8192字节，仅对路由/类型白名单作投影；未知或无效JSON整段省略，不截出原始前缀。SSE、二进制和AI HTTP正文不缓存。`request_body_omitted/response_body_omitted`明确省略原因；完整性为false或未知字节不代表空体。
 
 AI的模型调用单独建`ai.model.call`子span，记忆/RAG编排与模型计时分开。日志摘要由代码按操作、模型、长度、finish reason生成；token仅在供应商实际报告时出现，公开reasoning摘要的存在性不等于模型隐藏的内部推理。当前自由Prompt/回答正文采集保持关闭，诊断投影只接受经过类型白名单的元数据，不能通过设置日志级别打开原始正文。
 

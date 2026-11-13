@@ -39,6 +39,7 @@ javaRepositories.each { repo ->
                 substitute module("com:${repo.name}") using project(':')
                 if (repo.name == 'utils') {
                     substitute module('com:fleet-observability') using project(':fleet-observability')
+                    substitute module('com:traffic-canary') using project(':traffic-canary')
                 }
             }
         }
