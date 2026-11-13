@@ -33,7 +33,7 @@ class RuntimePreparationTests(unittest.TestCase):
         self.agent = self.root / "agent.jar"
         self.privacy = self.root / "privacy extension.jar"
         for path, manifest in ((self.agent, "Implementation-Version: 2.33.1\n"),
-                               (self.privacy, "Implementation-Version: 0.1.1\nFleet-Agent-Version: 2.33.1\n")):
+                               (self.privacy, "Implementation-Version: 0.1.2\nFleet-Agent-Version: 2.33.1\n")):
             with zipfile.ZipFile(path, "w") as jar:
                 jar.writestr("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\n" + manifest)
         self.agent_digest = hashlib.sha256(self.agent.read_bytes()).hexdigest()

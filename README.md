@@ -12,7 +12,7 @@
 
 ## IDEA原生Spring Boot与服务器Jar观测启动
 
-IDE原生开发与服务器Jar入口共用 `scripts/observability_runtime.py` 的完整 preflight：固定官方 OTel Java agent `2.33.1` 的 SHA-256/版本，以及本地构建隐私扩展 `0.1.1` 的 SHA-256/兼容版本；任一缺失、摘要或版本不符均在服务 JVM 启动前拒绝。仅给选定服务挂 agent，不使用全局 `JAVA_TOOL_OPTIONS`，不影响编译器和测试 JVM。
+IDE原生开发与服务器Jar入口共用 `scripts/observability_runtime.py` 的完整 preflight：固定官方 OTel Java agent `2.33.1` 的 SHA-256/版本，以及本地构建隐私扩展 `0.1.2` 的 SHA-256/兼容版本；任一缺失、摘要或版本不符均在服务 JVM 启动前拒绝。仅给选定服务挂 agent，不使用全局 `JAVA_TOOL_OPTIONS`，不影响编译器和测试 JVM。
 
 先按 `utils/ops/github-dev/observability/agent-extension/README.md` 准备两个 Git 外制品。私有 runtime env 提供 `OTEL_JAVAAGENT_PATH`、`OTEL_JAVAAGENT_SHA256`、`FLEET_PRIVACY_EXTENSION_PATH`、`FLEET_PRIVACY_EXTENSION_SHA256`、`OTEL_EXPORTER_OTLP_ENDPOINT` 和需要的 `OTEL_EXPORTER_OTLP_HEADERS`；私有 dev env 提供既有 `GITHUB_*` 配置及 `GITHUB_ACTUATOR_TOKEN`。两文件必须由当前用户持有、0600、非 symlink，内容按简单 env 格式解析，不执行 shell。
 
@@ -93,7 +93,7 @@ Java 文件日志写入所选 state 目录下的 `logs/`，Boot ECS 保留安全
 
 gateway 1.1.7 的统一准备入口成套设置 `gateway.observability.client-span-enabled=true` 与 `otel.instrumentation.reactor-netty-1.0.enabled=false`；其余八服务不增加这两个键。应用开关默认关闭，只有统一入口启用的 Gateway 才接管出站 HTTP span：发送前建立真实 CLIENT 并注入 W3C 身份，在实际 HTTP 请求头写入时同步恢复该 Context，抑制底层重复 CLIENT，并保留自动 SERVER。完整监听响应体完成、活动取消和上游错误，恰好结束一次；已在本地完成的请求不创建出站 CLIENT，尚无上游响应时不虚填 HTTP 状态。不能换成 `otel.instrumentation.reactor-netty.enabled=false` 或 `otel.instrumentation.netty.enabled=false`，也不能只修改成套配置中的一项。原生 IDEA、服务器 Jar 复用同一 preflight，VM、环境变量及业务参数覆盖应用开关或 OTel 选择器会被拒绝。
 
-Gateway 的固定真实 agent 子 JVM 验证为显式 opt-in：在 `gateway` 仓库提供 `FLEET_TEST_AGENT`、`FLEET_TEST_PRIVACY` 两个已有制品的本机路径，运行 `./gradlew test --tests com.kellen.config.GatewayClientTracingAgentTest --no-daemon`。没有路径时本地测试明确跳过四个用例；Gateway CI 显式准备固定官方 Agent 2.33.1 和隐私扩展 0.1.1，校验 SHA-256 后启用这四项测试。测试本身不隐式联网下载、不读取私有运行配置、不调用模型，使用回环 POST HTTP 和实际导出的 span，核对正常响应、活动取消、上游异常、连接复用、并发及请求头写入前取消后的清理，保持请求头和正文不变。当前完整父子链回归范围为 HTTP/1.1，不把 H2 探索结果等同于端到端验收。源码测试、隔离 agent 验证、目标运行态及整条调用链读回分别验收，不能用 100% 采样或容器／进程启动成功替代。
+Gateway 的固定真实 agent 子 JVM 验证为显式 opt-in：在 `gateway` 仓库提供 `FLEET_TEST_AGENT`、`FLEET_TEST_PRIVACY` 两个已有制品的本机路径，运行 `./gradlew test --tests com.kellen.config.GatewayClientTracingAgentTest --no-daemon`。没有路径时本地测试明确跳过四个用例；Gateway CI 显式准备固定官方 Agent 2.33.1 和隐私扩展 0.1.2，校验 SHA-256 后启用这四项测试。测试本身不隐式联网下载、不读取私有运行配置、不调用模型，使用回环 POST HTTP 和实际导出的 span，核对正常响应、活动取消、上游异常、连接复用、并发及请求头写入前取消后的清理，保持请求头和正文不变。当前完整父子链回归范围为 HTTP/1.1，不把 H2 探索结果等同于端到端验收。源码测试、隔离 agent 验证、目标运行态及整条调用链读回分别验收，不能用 100% 采样或容器／进程启动成功替代。
 
 本机访问自身私网地址可能被本机路由/网络策略阻断，即使 NAS 已成功抓取。托管验证超时会保留新 JVM 和诊断回执，不自动回滚或杀进程；先从 NAS 核 health、令牌边界和目标状态，再决定是否重试。
 
@@ -249,7 +249,7 @@ GitHub Actions在`main`、`test`、`preprod`推送及面向`main`的PR上运行�
 
 ### 开发环境全量Trace与安全输入输出
 
-github-dev使用`always_on`，包括收到`traceparent`中sampled=0的请求，保留原Trace/parent并向下游传播采样标记；旧`FLEET_TRACE_RATIO`不再控制此环境。Java隐私扩展0.1.1在实际exporter前保留有限GenAI模型/Prompt版本/供应商报告用量与Dubbo协议元数据，继续清除原始异常、SQL、URL、模型正文和未知属性。完整Trace以验收请求清单逐项读回为准，100%采样不能替代存储持久化保证。
+github-dev使用`always_on`，包括收到`traceparent`中sampled=0的请求，保留原Trace/parent并向下游传播采样标记；旧`FLEET_TRACE_RATIO`不再控制此环境。Java隐私扩展0.1.2在实际exporter前保留有限GenAI模型/Prompt版本/供应商报告用量与Dubbo协议元数据，继续清除原始异常、SQL、URL、模型正文和未知属性。完整Trace以验收请求清单逐项读回为准，100%采样不能替代存储持久化保证。
 
 普通HTTP请求通过`com:fleet-observability:0.1.2`统一输出`event=http.server.exchange`：方法、框架路由模板、状态、耗时、真实读写字节、完整性、结果及同Trace/Span标识。每体最多8192字节，仅对路由/类型白名单作投影；未知或无效JSON整段省略，不截出原始前缀。SSE、二进制和AI HTTP正文不缓存。`request_body_omitted/response_body_omitted`明确省略原因；完整性为false或未知字节不代表空体。
 

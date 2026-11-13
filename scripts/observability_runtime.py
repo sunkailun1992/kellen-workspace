@@ -30,6 +30,7 @@ RPC_PORT_PROPERTY_NAMES = frozenset({"dubboprotocolport", "dubboprotocolstriport
 SAFE_FIELDS = ",".join((
     "@timestamp", "log", "log.level", "service", "service.name", "service.version", "service.environment",
     "event", "summary", "duration_ms", "outcome", "stage", "error_type", "error_code", "trace_id", "span_id",
+    "traffic_route_hop", "traffic_route_mode", "traffic_route_decision",
     "http_method", "http_route", "http_status", "request_bytes", "response_bytes", "request_body", "response_body",
     "request_body_complete", "response_body_complete", "request_body_omitted", "response_body_omitted",
     "ai_operation", "ai_provider", "ai_model", "ai_response_model", "ai_prompt_key", "ai_prompt_version",
@@ -238,7 +239,7 @@ def runtime_inputs(runtime_env, dev_env):
     if not environment.get("GITHUB_ACTUATOR_TOKEN") or environment.get("GITHUB_NACOS_DEV_NAMESPACE", "github-dev") != "github-dev":
         raise ValueError("personal namespace or actuator token invalid")
     agent = verified_jar("OTEL_JAVAAGENT_PATH", "OTEL_JAVAAGENT_SHA256", "2.33.1", environment)
-    privacy = verified_jar("FLEET_PRIVACY_EXTENSION_PATH", "FLEET_PRIVACY_EXTENSION_SHA256", "0.1.1", environment)
+    privacy = verified_jar("FLEET_PRIVACY_EXTENSION_PATH", "FLEET_PRIVACY_EXTENSION_SHA256", "0.1.2", environment)
     endpoint = urlsplit(environment["OTEL_EXPORTER_OTLP_ENDPOINT"])
     if endpoint.scheme not in {"http", "https"} or not endpoint.hostname or endpoint.username or endpoint.password or endpoint.query or endpoint.fragment:
         raise ValueError("collector endpoint invalid")

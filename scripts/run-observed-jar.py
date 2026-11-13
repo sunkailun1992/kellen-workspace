@@ -142,7 +142,7 @@ def main():
         command = [java, *receipt["jvm_arguments"], "-jar", str(artifact), *application_args]
         if args.dry_run:
             print(json.dumps({"service": args.service, "version": version, "agent": "2.33.1 verified",
-                              "privacy_extension": "0.1.1 verified", "application_argument_count": len(application_args),
+                              "privacy_extension": "0.1.2 verified", "application_argument_count": len(application_args),
                               "rpc_port": receipt["rpc_port"], "application_sha256": digest,
                               "artifact_policy": "immutable content copy", "secret_values": "not displayed", "files_written": False}))
             return 0

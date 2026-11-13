@@ -28,7 +28,7 @@ def main():
                f":{args.service}:bootRun"]
     if args.dry_run:
         print(json.dumps({"service": args.service, "command": command,
-                          "agent": "2.33.1 checksum verified", "privacy_extension": "0.1.1 checksum verified",
+                          "agent": "2.33.1 checksum verified", "privacy_extension": "0.1.2 checksum verified",
                           "runtime": "full preflight verified", "secrets": "not displayed"}, ensure_ascii=False))
         return 0
     environment = dict(controlled_environment(os.environ, service=args.service), FLEET_OBSERVABILITY_SERVICE=args.service)
