@@ -1,4 +1,4 @@
-"""独立 Java17 进程核对 Jar 入口的配置传递；不替代正式 OTel/Boot 端到端验收。"""
+"""独立 Java21 进程核对 Jar 入口的配置传递；不替代正式 OTel/Boot 端到端验收。"""
 import hashlib
 import http.server
 import importlib.util
@@ -137,7 +137,7 @@ class ImmutableJarTests(unittest.TestCase):
         self.assertEqual(self.target.read_bytes(), b"OTHER_WRITER")
 
 
-@unittest.skipUnless(shutil.which("javac") and shutil.which("java"), "Java17 fixture requires javac/java")
+@unittest.skipUnless(shutil.which("javac") and shutil.which("java"), "Java21 fixture requires javac/java")
 class ObservedJarProcessTests(unittest.TestCase):
     def setUp(self):
         runtime_tests.RuntimePreparationTests.setUp(self)
@@ -206,7 +206,7 @@ public class Fixture {
 ''')
         delayed = self.root / "DelayedFixture.java"
         delayed.write_text('public class DelayedFixture { public static String message() { return "DELAYED_CLASS_OK"; } }')
-        subprocess.run(["javac", "--release", "17", str(source), str(delayed)], check=True, capture_output=True)
+        subprocess.run(["javac", "--release", "21", str(source), str(delayed)], check=True, capture_output=True)
         with zipfile.ZipFile(self.agent, "w") as jar:
             jar.writestr("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\nImplementation-Version: 2.33.1\nPremain-Class: Fixture\n\n")
             jar.write(self.root / "Fixture.class", "Fixture.class")

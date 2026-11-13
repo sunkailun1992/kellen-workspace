@@ -2,7 +2,7 @@
 
 此工具的来源和目标只接受固定允许的 `github_dev_ai`、`github_dev_ai_memory`、`github_dev_mcp`、`github_dev_message`、`github_dev_rag`、`github_dev_report`、`github_dev_user`。默认只读计划；显式执行时仅向已审核的空目标进行事务化 INSERT。PostgreSQL 只部署在 NAS，为七个同名独立数据库，各自角色同名，表均在 `public`；本机只运行 Java 17/JDBC 客户端，不安装或运行 PostgreSQL 服务。不连接公司库，不生成业务正文 dump，不安装软件，不创建数据库、角色、schema 或表，不执行删除、覆盖或 truncate。
 
-Java 17 与五个官方依赖只从现有 Gradle 缓存读取并核验固定 SHA-256：MySQL Connector/J 9.6.0、PostgreSQL JDBC 42.7.10、Jackson Core/Databind 3.1.0、Jackson Annotations 2.21。源码编译产物放在忽略的 `build/database-migration/`；缺少固定制品时明确拒绝，不下载其他版本。
+Java 21 与五个官方依赖只从现有 Gradle 缓存读取并核验固定 SHA-256：MySQL Connector/J 9.6.0、PostgreSQL JDBC 42.7.10、Jackson Core/Databind 3.1.0、Jackson Annotations 2.21。源码编译产物放在忽略的 `build/database-migration/`；缺少固定制品时明确拒绝，不下载其他版本。
 
 ## 配置与计划
 

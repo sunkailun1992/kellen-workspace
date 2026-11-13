@@ -15,7 +15,7 @@
 - 不将真实凭据、个人绝对路径、IDE私有状态或运行时配置加入Git。授权的本机配置生成仅写被忽略目录或IDE个人设置中的独立受管组，按dry-run、SHA比对和受限备份应用；未知用户配置保留。
 - IDEA日常开发使用九个原生Spring Boot/Application入口，用户点击主类绿叶Run/Debug；不生成Java服务的共享Gradle启动配置，不添加Gradle Before Run。原生运行前通过IDE内置External Tool执行Python校验，不启动Gradle、不装额外插件。
 - `idea.sh`只为当前工作区根链接维护`delegatedBuild=false`，使用IDEA编译运行；`testRunner`、其它链接及未知用户设置保留，文件并发变化须CAS拒绝，不修改全局委托选项。
-- Gradle composite继续用于构建模型、SDK源码替换和验证；标准wrapper不改。命令行/服务器Jar入口保持独立，不替代IDE原生启动体验。
+- Gradle composite继续用于构建模型、SDK源码替换和验证；各项目沿用自己的标准Gradle wrapper（当前统一9.9.1），工作区整合不改写它们。命令行/服务器Jar入口保持独立，不替代IDE原生启动体验。
 - 提交前、推送前fetch；远端前进时在验证后正常整合，不强推。新功能分支使用`codex/`前缀，完整交付main后清理本次短分支。
 - 维护者本人，以及维护者本机用维护者账号运行的Claude/Codex会话，可以直接合并到`main`：合并前本机验证命令全过，合并后看CI，红了马上修。推送后读回精确提交的CI结论。
 - 云端会话（`CLAUDE_CODE_REMOTE=true`，或会话里没有本机配置）只推会话分支，由维护者或本机会话合并。其他人的代码走PR：CI全绿、维护者审核批准、评审对话解决后再合并。代理不修改ruleset与仓库权限，除非用户当场明确要求。

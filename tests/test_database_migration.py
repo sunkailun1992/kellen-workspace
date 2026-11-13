@@ -32,11 +32,11 @@ class MigrationLauncherTest(unittest.TestCase):
         try:
             cp, java, javac = module.build_runtime()
         except module.Rejected as error:
-            if str(error) in {"JAVA17_UNAVAILABLE", "JAVA17_REQUIRED", "PINNED_DEPENDENCY_UNAVAILABLE"}:
+            if str(error) in {"JAVA21_UNAVAILABLE", "JAVA21_REQUIRED", "PINNED_DEPENDENCY_UNAVAILABLE"}:
                 self.skipTest(str(error))
             raise
         with tempfile.TemporaryDirectory() as temp:
-            result = subprocess.run([str(javac), "--release", "17", "-cp", cp, "-d", temp,
+            result = subprocess.run([str(javac), "--release", "21", "-cp", cp, "-d", temp,
                                      str(ROOT / "tests/database/MigrationContractTest.java")], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             result = subprocess.run([str(java), "-cp", temp + os.pathsep + cp, "MigrationContractTest"], capture_output=True, text=True)
@@ -55,7 +55,7 @@ class MigrationLauncherTest(unittest.TestCase):
         spec.loader.exec_module(module)
         cp, java, javac = module.build_runtime()
         with tempfile.TemporaryDirectory() as temp:
-            compiled = subprocess.run([str(javac), "--release", "17", "-cp", cp, "-d", temp,
+            compiled = subprocess.run([str(javac), "--release", "21", "-cp", cp, "-d", temp,
                                        str(ROOT / "tests/database/MigrationPostgresqlTest.java")], capture_output=True, text=True)
             self.assertEqual(compiled.returncode, 0, compiled.stderr)
             result = subprocess.run([str(java), "-cp", temp + os.pathsep + cp, "MigrationPostgresqlTest"],

@@ -116,7 +116,7 @@ python3 scripts/conductor_demo.py plan
 ## 环境要求
 
 - Git、Bash、Python 3.10+（只使用标准库，无需安装Python依赖）。
-- JDK 17；Gradle由根目录的wrapper固定为8.14.3，无需全局安装。
+- JDK 21；Gradle由根目录的wrapper固定为9.9.1，无需全局安装。
 - 首次下载需要访问GitHub和项目使用的远端依赖仓库。
 - Web前端的Node.js/包管理器，按admin-web文档配置。
 
@@ -184,7 +184,7 @@ FF合并同时使用`--no-overwrite-ignore`：若远端开始跟踪与本机igno
 ./gradlew compileAllJava
 ```
 
-用IDEA打开本工作区根目录，设置Gradle JVM为JDK 17，并从根`settings.gradle`进行一次Gradle导入。根构建将清单中的11个Java项目作为included builds导入。缺少项目时会提示先初始化，不会静默忽略。
+用IDEA打开本工作区根目录，设置Gradle JVM为JDK 21，并从根`settings.gradle`进行一次Gradle导入。根构建将清单中的11个Java项目作为included builds导入。缺少项目时会提示先初始化，不会静默忽略。
 
 `idea.sh`在本机`.idea/gradle.xml`中只为当前工作区链接设置`delegatedBuild=false`，让原生Run/Debug使用IDEA编译；保留`testRunner`、其它项目链接及未知设置。新克隆可生成该根链接；模糊/重复链接或文件在规划后发生变化时拒绝覆盖。该本机设置不进入Git，不改变全局IDE选项或服务器打包方式。
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""编译固定依赖的 Java 17 迁移工具；默认只计划，不安装工具或依赖。"""
+"""编译固定依赖的 Java 21 迁移工具；默认只计划，不安装工具或依赖。"""
 import argparse
 import hashlib
 import json
@@ -45,16 +45,16 @@ def private_file(path):
 def build_runtime():
     home = os.environ.get("JAVA_HOME")
     if not home and sys.platform == "darwin":
-        selected = subprocess.run(["/usr/libexec/java_home", "-v", "17"], capture_output=True, text=True)
+        selected = subprocess.run(["/usr/libexec/java_home", "-v", "21"], capture_output=True, text=True)
         if selected.returncode == 0:
             home = selected.stdout.strip()
     java = Path(home) / "bin/java" if home else Path(shutil.which("java") or "/missing")
     javac = Path(home) / "bin/javac" if home else Path(shutil.which("javac") or "/missing")
     if not java.is_file() or not javac.is_file():
-        raise Rejected("JAVA17_UNAVAILABLE")
+        raise Rejected("JAVA21_UNAVAILABLE")
     version = subprocess.run([str(java), "-version"], capture_output=True, text=True, env=java_environment())
-    if version.returncode or 'version "17.' not in version.stderr:
-        raise Rejected("JAVA17_REQUIRED")
+    if version.returncode or 'version "21.' not in version.stderr:
+        raise Rejected("JAVA21_REQUIRED")
     jars = []
     for group, artifact, version, expected in PINS:
         cache = Path.home() / ".gradle/caches/modules-2/files-2.1" / group / artifact / version
@@ -69,7 +69,7 @@ def build_runtime():
     classes.mkdir(parents=True, exist_ok=True)
     cp = os.pathsep.join(jars)
     if not (classes / "FleetMigration.class").is_file():
-        compiled = subprocess.run([str(javac), "--release", "17", "-encoding", "UTF-8", "-cp", cp,
+        compiled = subprocess.run([str(javac), "--release", "21", "-encoding", "UTF-8", "-cp", cp,
                                    "-d", str(classes), *map(str, sources)], capture_output=True, text=True, env=java_environment())
         if compiled.returncode:
             raise Rejected("MIGRATION_COMPILATION_FAILED")
