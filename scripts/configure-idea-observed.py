@@ -47,7 +47,7 @@ def candidate(root, inputs):
         result = subprocess.run(["git", "-C", str(repo), "remote", "get-url", "origin"], text=True, capture_output=True)
         if result.returncode or workspace.github_identity(result.stdout.strip()) != workspace.github_identity(manifest[service]["url"]):
             raise RuntimeValidationError("IDE_REPOSITORY_MISMATCH")
-        receipt = prepare(service, checkout_version(service, root), **inputs, write=False)
+        receipt = prepare(service, checkout_version(service, root), **inputs, write=False, local_repo=repo)
         prior = config.find("option[@name='VM_PARAMETERS']")
         arguments = idea_vm_arguments(prior.get("value", "")) if prior is not None else []
         retained = []
@@ -132,7 +132,8 @@ def main():
             assert_plan_current(tools)
             configure_binding(root=ROOT, **inputs)
             for entry in selected:
-                prepare(entry["service"], checkout_version(entry["service"]), **inputs)
+                service = entry["service"]
+                prepare(service, checkout_version(service), **inputs, local_repo=ROOT / service)
             # CAS 和受限备份先于替换；IDE 内存中的配置需另外刷新验收。
             if workspace.read_idea_bytes(path) != before:
                 raise RuntimeValidationError("IDE_METADATA_CHANGED")

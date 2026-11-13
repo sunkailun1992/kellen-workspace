@@ -13,7 +13,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ObservedLauncherTest(unittest.TestCase):
-    def run_launcher(self, service="rag", digest=None, extension=True, extension_digest=None, agent_version="2.33.1", extension_version="0.1.2", binding=True):
+    def run_launcher(self, service="rag", digest=None, extension=True, extension_digest=None,
+                     agent_version="2.33.1", extension_version="0.1.2", binding=True, local_yaml=False):
         with tempfile.TemporaryDirectory(prefix="observability 空格 ") as temp:
             agent = Path(temp) / "agent.jar"
             with zipfile.ZipFile(agent, 'w') as jar:
@@ -46,9 +47,18 @@ class ObservedLauncherTest(unittest.TestCase):
                 hashlib.sha256(agent.read_bytes()).hexdigest())
             (fixture_root / "scripts/observability_runtime.py").write_text(helper)
             (fixture_root / "scripts/service_runtime_environment.py").write_text((ROOT / "scripts/service_runtime_environment.py").read_text())
+            (fixture_root / "scripts/workspace.py").write_text((ROOT / "scripts/workspace.py").read_text())
             (fixture_root / "repos.json").write_text((ROOT / "repos.json").read_text())
-            (fixture_root / "rag").mkdir()
-            (fixture_root / "rag/build.gradle").write_text("version = '1.1.6'\n")
+            repo = fixture_root / "rag"
+            repo.mkdir()
+            (repo / "build.gradle").write_text("version = '1.1.6'\n")
+            if local_yaml:
+                subprocess.run(["git", "init", "--quiet", str(repo)], check=True)
+                bootstrap = repo / "config/application-dev.yml"
+                bootstrap.parent.mkdir()
+                (repo / ".git/info/exclude").write_text("/config/application-dev.yml\n")
+                bootstrap.write_text("GITHUB_NACOS_PASSWORD: SYNTHETIC_LOCAL_YAML\n")
+                bootstrap.chmod(0o600)
             state = fixture_root / "build/observability-runtime"
             state.mkdir(parents=True, mode=0o700)
             if binding:
@@ -64,6 +74,11 @@ class ObservedLauncherTest(unittest.TestCase):
         self.assertIn(":rag:bootRun", result.stdout)
         self.assertIn("observability.init.gradle", result.stdout)
         self.assertNotIn("SYNTHETIC_PRIVATE_TOKEN", result.stdout + result.stderr)
+
+    def test_yaml_bootstrap_is_accepted_without_secret_output(self):
+        result = self.run_launcher(local_yaml=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("SYNTHETIC_LOCAL_YAML", result.stdout + result.stderr)
 
     def test_public_library_cannot_be_started_as_service(self):
         result = self.run_launcher("utils")

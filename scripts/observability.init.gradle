@@ -36,6 +36,9 @@ gradle.beforeProject { project ->
                         throw new GradleException('观测启动前校验失败；先配置受限 launch binding，私有值省略。')
                     }
                     def receipt = new JsonSlurper().parseText(output)
+                    if (receipt.local_nacos_yaml && task.workingDir.canonicalFile != project.projectDir.canonicalFile) {
+                        throw new GradleException('本地 Nacos YAML 需要在对应服务仓库根目录启动；保留原工作目录，私有值省略。')
+                    }
                     // 秘密只在受限配置或目标 OS env 内。旧 shell 的环境不得覆盖本次输入。
                     task.environment.keySet().findAll { key ->
                         managedProperty(key) || key in ['JAVA_TOOL_OPTIONS', 'JDK_JAVA_OPTIONS', '_JAVA_OPTIONS']

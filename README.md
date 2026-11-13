@@ -81,6 +81,8 @@ Jar 的 `Start-Class` 必须匹配声明服务，`Implementation-Version` 必须
 
 下述工具供已授权运维验收与进程接管使用；日常开发仍直接点 IDEA 原生 Run/Debug。`scripts/manage-observed.py`用于现有进程的受控替换，不要求先发布远端 Git/Maven。它会先配置私有绑定、完成全部 prepare 和 dry-run，再核对个人 checkout classpath、服务主类、业务/管理端口归属，只对明确选中的旧 PID 发 TERM；超时不强杀。任一 preflight 失败保留旧 JVM。新进程必须通过 health、正确令牌 metrics、无/错令牌拒绝，才记为 verified。
 
+服务仓库根目录的 `config/application-dev.yml`（或 `.yaml`）可保存本机 Nacos 引导值，也兼容既有 `config/application-dev.properties`。托管启动要求已存在的这些文件均由当前用户持有、权限为 `0600` 或 `0400`、已被该服务 Git 仓库忽略且未跟踪。写入 YAML 前先在本机 Git 排除规则中加入对应路径，迁移后将旧 properties 备份到 Spring 搜索路径之外。两种格式同目录共存时，Spring 对同名属性优先使用 properties。仅保留 YAML 时，IDEA 与本地 `bootRun` 的观测准备由 YAML 提供 Nacos 地址、group、账号和密码，并保留受管的 `dev` profile、`github-dev` namespace 和观测参数。服务器 Jar 仍从其独立私有 env 获得 Nacos 设置。
+
 ```bash
 python3 scripts/manage-observed.py collector-start --runtime-env /secure/observability.env
 python3 scripts/manage-observed.py start user --replace-pid <已核个人JVM的PID> \

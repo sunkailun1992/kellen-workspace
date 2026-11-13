@@ -20,6 +20,58 @@ spec.loader.exec_module(managed)
 
 
 class ManagedObservabilityTest(unittest.TestCase):
+    @staticmethod
+    def write_bootstrap(repo, extension):
+        subprocess.run(["git", "init", "--quiet", str(repo)], check=True)
+        relative = f"config/application-dev.{extension}"
+        path = repo / relative
+        path.parent.mkdir(exist_ok=True)
+        (repo / ".git/info/exclude").write_text("/" + relative + "\n")
+        path.write_text("# synthetic bootstrap\n")
+        path.chmod(0o600)
+        return path
+
+    def test_private_bootstrap_accepts_yaml_and_properties(self):
+        for extension in ("properties", "yml", "yaml"):
+            with self.subTest(extension=extension), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                repo = root / "service"
+                self.write_bootstrap(repo, extension)
+                link = root / "workspace-service"
+                link.symlink_to(repo, target_is_directory=True)
+                managed.validate_dev_bootstrap(link)
+
+    def test_private_bootstrap_rejects_visible_or_tracked_yaml(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            bootstrap = self.write_bootstrap(repo, "yml")
+            (repo / ".git/info/exclude").write_text("")
+            with self.assertRaisesRegex(ValueError, "ignored and untracked"):
+                managed.validate_dev_bootstrap(repo)
+            subprocess.run(["git", "-C", str(repo), "add", str(bootstrap)], check=True)
+            (repo / ".git/info/exclude").write_text("/config/application-dev.yml\n")
+            with self.assertRaisesRegex(ValueError, "ignored and untracked"):
+                managed.validate_dev_bootstrap(repo)
+
+    def test_private_bootstrap_rejects_insecure_yaml_alongside_valid_properties(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            properties = self.write_bootstrap(repo, "properties")
+            yaml = properties.with_suffix(".yml")
+            (repo / ".git/info/exclude").write_text("/config/application-dev.*\n")
+            yaml.write_text("# synthetic bootstrap\n")
+            yaml.chmod(0o644)
+            with self.assertRaisesRegex(ValueError, "owner-only regular file"):
+                managed.validate_dev_bootstrap(repo)
+            yaml.unlink()
+            yaml.symlink_to(properties)
+            with self.assertRaisesRegex(ValueError, "owner-only regular file"):
+                managed.validate_dev_bootstrap(repo)
+            yaml.unlink()
+            os.link(properties, yaml)
+            with self.assertRaisesRegex(ValueError, "owner-only regular file"):
+                managed.validate_dev_bootstrap(repo)
+
     def test_collector_uses_owner_only_persistent_offsets_and_ignores_env_override(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -102,15 +154,13 @@ class ManagedObservabilityTest(unittest.TestCase):
     def test_full_preflight_failure_preserves_existing_jvm(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            bootstrap = root / "ai-agent/config/application-dev.properties"
-            bootstrap.parent.mkdir(parents=True)
-            bootstrap.write_text("GITHUB_NACOS_DEV_NAMESPACE=github-dev\n")
+            self.write_bootstrap(root / "ai-agent", "yml")
             args = SimpleNamespace(service="ai-agent", replace_pid=123, timeout=1)
             environment = {"GITHUB_ACTUATOR_TOKEN": "synthetic", "FLEET_MANAGEMENT_BIND_ADDRESS": "10.0.0.9"}
             with patch.object(managed, "ROOT", root), patch.object(managed, "listener", return_value=[]), \
                     patch.object(managed, "launch_preflight", side_effect=ValueError("rejected full runtime")), \
                     patch.object(managed, "stop_owned") as stop:
-                with self.assertRaises(ValueError):
+                with self.assertRaisesRegex(ValueError, "rejected full runtime"):
                     managed.service_start(args, environment, root / "state")
                 stop.assert_not_called()
 
@@ -128,20 +178,17 @@ class ManagedObservabilityTest(unittest.TestCase):
     def test_foreign_management_listener_preserves_old_jvm_before_stop(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            bootstrap = root / "ai-agent/config/application-dev.properties"
-            bootstrap.parent.mkdir(parents=True)
-            bootstrap.write_text("GITHUB_NACOS_DEV_NAMESPACE=github-dev\n")
             state = root / "state"
             state.mkdir()
             args = SimpleNamespace(service="ai-agent", replace_pid=101, timeout=1)
             environment = {"GITHUB_ACTUATOR_TOKEN": "synthetic", "FLEET_MANAGEMENT_BIND_ADDRESS": "10.0.0.9"}
             with patch.object(managed, "ROOT", root), \
-                    patch.object(managed.subprocess, "run", return_value=SimpleNamespace(returncode=0)), \
+                    patch.object(managed, "validate_dev_bootstrap"), \
                     patch.object(managed, "listener", side_effect=lambda port: [999] if port == 17310 else [101]), \
                     patch.object(managed, "stop_owned") as stop, \
                     patch.object(managed, "http_status") as http, \
                     patch.object(managed.subprocess, "Popen", side_effect=AssertionError("must not launch")):
-                with self.assertRaises(ValueError):
+                with self.assertRaisesRegex(ValueError, "management port belongs"):
                     managed.service_start(args, environment, state)
                 stop.assert_not_called()
                 http.assert_not_called()
@@ -149,9 +196,6 @@ class ManagedObservabilityTest(unittest.TestCase):
     def test_http_success_from_foreign_management_pid_cannot_verify_service(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            bootstrap = root / "ai-agent/config/application-dev.properties"
-            bootstrap.parent.mkdir(parents=True)
-            bootstrap.write_text("GITHUB_NACOS_DEV_NAMESPACE=github-dev\n")
             state = root / "state"
             (state / "logs").mkdir(parents=True)
             (state / "logs/ai-agent.json").write_text("{}\n")
@@ -165,6 +209,7 @@ class ManagedObservabilityTest(unittest.TestCase):
             def http_success(url, token=None):
                 return 200 if url.endswith("/health") or token == "synthetic" else 401
             with patch.object(managed, "ROOT", root), \
+                    patch.object(managed, "validate_dev_bootstrap"), \
                     patch.object(managed.subprocess, "run", return_value=SimpleNamespace(returncode=0)), \
                     patch.object(managed.subprocess, "Popen", return_value=child), \
                     patch.object(managed, "launch_preflight"), \
@@ -192,9 +237,7 @@ class ManagedObservabilityTest(unittest.TestCase):
     def test_missing_explicit_management_bind_preserves_old_jvm(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            bootstrap = root / "ai-agent/config/application-dev.properties"
-            bootstrap.parent.mkdir(parents=True)
-            bootstrap.write_text("GITHUB_NACOS_DEV_NAMESPACE=github-dev\n")
+            self.write_bootstrap(root / "ai-agent", "properties")
             args = SimpleNamespace(service="ai-agent", replace_pid=123, timeout=1)
             with patch.object(managed, "ROOT", root), patch.object(managed, "stop_owned") as stop:
                 with self.assertRaises(ValueError):

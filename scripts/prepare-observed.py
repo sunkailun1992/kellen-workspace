@@ -45,7 +45,8 @@ def main():
             if args.service_env is not None:
                 from service_runtime_environment import parse_references
                 inputs["service_envs"]={**inputs.get("service_envs",{}),**parse_references(args.service_env)}
-            result = prepare(args.service, args.version or checkout_version(args.service), **inputs)
+            result = prepare(args.service, args.version or checkout_version(args.service),
+                             **inputs, local_repo=ROOT / args.service)
             if args.check_idea:
                 check_idea_runtime(args.service, result)
         if not args.quiet:

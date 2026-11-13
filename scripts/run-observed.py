@@ -21,7 +21,8 @@ def main():
         names = {repo["name"] for repo in manifest["repositories"] if repo["kind"] == "java-service"}
         if args.service not in names:
             raise ValueError("not a declared service")
-        prepare(args.service, checkout_version(args.service), **load_binding(), write=not args.dry_run)
+        prepare(args.service, checkout_version(args.service), **load_binding(),
+                write=not args.dry_run, local_repo=ROOT / args.service)
     except Exception:
         parser.exit(2, "personal launch binding, pinned artifacts or runtime configuration invalid; private values omitted\n")
     command = [str(ROOT / "gradlew"), "--no-daemon", "--init-script", str(ROOT / "scripts/observability.init.gradle"),

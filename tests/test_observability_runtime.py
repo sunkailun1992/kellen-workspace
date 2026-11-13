@@ -12,6 +12,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+import xml.etree.ElementTree as ET
 import zipfile
 from urllib.parse import quote
 
@@ -70,6 +71,32 @@ class RuntimePreparationTests(unittest.TestCase):
         self.assertIn("otel.metrics.exporter=none", agent.read_text())
         self.assertIn("logging.structured.format.file=ecs", app.read_text())
         self.assertNotIn("message,", app.read_text())
+
+    def test_local_yaml_owns_nacos_connection_without_changing_server_jar_input(self):
+        repo = self.root / "gateway"
+        subprocess.run(["git", "init", "--quiet", str(repo)], check=True)
+        bootstrap = repo / "config/application-dev.yml"
+        bootstrap.parent.mkdir()
+        (repo / ".git/info/exclude").write_text("/config/application-dev.yml\n")
+        bootstrap.write_text("GITHUB_NACOS_DEV_SERVER_ADDR: yaml-fixture\n")
+        bootstrap.chmod(0o600)
+        with self.dev.open("a") as inputs:
+            for key in sorted(runtime.LOCAL_NACOS_CONNECTION_KEYS):
+                inputs.write(f"{key}=legacy-fixture\n")
+        observed = runtime.prepare("gateway", "1.1.0", **self.inputs, local_repo=repo)
+        app = Path(observed["app_config"]).read_text()
+        self.assertTrue(observed["local_nacos_yaml"])
+        for key in runtime.LOCAL_NACOS_CONNECTION_KEYS:
+            self.assertNotIn(key + "=", app)
+        self.assertIn("APP_ENV=dev", app)
+        self.assertIn("GITHUB_NACOS_DEV_NAMESPACE=github-dev", app)
+        self.assertIn("management.server.port=17100", app)
+        self.assertIn("security.actuator.token=", app)
+        server = runtime.prepare("gateway", "1.1.0", **self.inputs)
+        self.assertFalse(server["local_nacos_yaml"])
+        app = Path(server["app_config"]).read_text()
+        for key in runtime.LOCAL_NACOS_CONNECTION_KEYS:
+            self.assertIn(key + "=legacy-fixture", app)
 
     def test_dry_prepare_validates_without_writing(self):
         result = runtime.prepare("rag", "1.1.6", **self.inputs, write=False)
@@ -336,7 +363,6 @@ class RuntimePreparationTests(unittest.TestCase):
         path = self.create_idea_fixture()
         tree = workspace.parse_idea_xml(path)
         method = tree.getroot().find("./component/configuration[@name='gateway']/method")
-        import xml.etree.ElementTree as ET
         ET.SubElement(method, "option", {"name": "Gradle.BeforeRunTask", "enabled": "true",
                                         "tasks": "prepareObservedGateway", "externalProjectPath": "$PROJECT_DIR$"})
         ET.SubElement(method, "option", {"name": "ToolBeforeRunTask", "enabled": "true", "actionId": "Tool_User_Keep"})
@@ -371,6 +397,33 @@ class RuntimePreparationTests(unittest.TestCase):
             path.write_bytes(workspace.idea_xml_bytes(tree))
             with self.assertRaises(ValueError):
                 runtime.check_idea_runtime("gateway", receipt, self.root)
+
+    def test_idea_local_nacos_yaml_requires_service_root_and_dev_profile(self):
+        path = self.create_idea_fixture()
+        repo = self.root / "gateway"
+        bootstrap = repo / "config/application-dev.yml"
+        bootstrap.parent.mkdir()
+        (repo / ".git/info/exclude").write_text("/config/application-dev.yml\n")
+        bootstrap.write_text("GITHUB_NACOS_DEV_SERVER_ADDR: yaml-fixture\n")
+        bootstrap.chmod(0o600)
+        _, _, after, _ = idea.candidate(self.root, self.inputs)
+        path.write_bytes(after)
+        receipt = runtime.prepare("gateway", "1.2.3", **self.inputs, local_repo=repo)
+        with patch.dict(os.environ, {}, clear=True):
+            runtime.check_idea_runtime("gateway", receipt, self.root)
+            for name, value, expected in (
+                    ("WORKING_DIRECTORY", "$PROJECT_DIR$", "IDE_PATH_INVALID"),
+                    ("ACTIVE_PROFILES", "test", "IDE_APPLICATION_ARGS_OVERRIDE")):
+                tree = workspace.parse_idea_xml_bytes(after)
+                config = tree.getroot().find("./component/configuration[@name='gateway']")
+                option = config.find(f"option[@name='{name}']")
+                if option is None:
+                    option = ET.SubElement(config, "option", {"name": name})
+                option.set("value", value)
+                path.write_bytes(workspace.idea_xml_bytes(tree))
+                with self.assertRaises(runtime.RuntimeValidationError) as error:
+                    runtime.check_idea_runtime("gateway", receipt, self.root)
+                self.assertEqual(error.exception.reason_code, expected)
 
     def test_idea_environment_scope_uses_project_names_and_retains_identity_protection(self):
         self.dev.write_text(self.dev.read_text() + "GITHUB_CUSTOM_SOURCE_URL=SYNTHETIC_PROJECT_PRIVATE_VALUE\n")

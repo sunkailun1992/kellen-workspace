@@ -15,7 +15,8 @@ import urllib.error
 import urllib.request
 from urllib.parse import urlsplit
 
-from observability_runtime import SAFE_FIELDS, checkout_version, configure_binding, load_binding, prepare, secure_directory
+from observability_runtime import (SAFE_FIELDS, checkout_version, configure_binding, load_binding, prepare,
+                                   secure_directory, validate_dev_bootstrap)
 
 ROOT = Path(__file__).resolve().parents[1]
 SERVICES = {
@@ -108,8 +109,7 @@ def service_start(args, environment, state):
     if service not in SERVICES:
         raise ValueError("not a declared service")
     repo = ROOT / service
-    if not (repo / "config/application-dev.properties").is_file():
-        raise ValueError("service private dev bootstrap missing")
+    validate_dev_bootstrap(repo)
     token = environment.get("GITHUB_ACTUATOR_TOKEN")
     if not token or environment.get("GITHUB_NACOS_DEV_NAMESPACE", "github-dev") != "github-dev":
         raise ValueError("personal namespace or actuator token invalid")
@@ -189,7 +189,7 @@ def service_start(args, environment, state):
 
 def launch_preflight(args, state, service):
     configure_binding(args.runtime_env, args.dev_env, state, root=ROOT)
-    prepare(service, checkout_version(service, ROOT), **load_binding(ROOT))
+    prepare(service, checkout_version(service, ROOT), **load_binding(ROOT), local_repo=ROOT / service)
 
 
 def collector_offsets(state):

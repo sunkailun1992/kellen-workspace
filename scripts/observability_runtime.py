@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import stat
 import subprocess
 import tempfile
 from urllib.parse import unquote_to_bytes, urlsplit
@@ -46,6 +47,10 @@ IDE_IDENTITY_ENV_NAMES = frozenset({"GITHUB_ACTUATOR_TOKEN", "GITHUB_NACOS_DEV_S
                                    "GITHUB_NACOS_DEV_USERNAME", "GITHUB_NACOS_DEV_PASSWORD",
                                    "GITHUB_NACOS_DEV_NAMESPACE", "GITHUB_NACOS_DEV_GROUP",
                                    "GITHUB_NACOS_DEV_ACCESS_TOKEN"})
+LOCAL_NACOS_CONNECTION_KEYS = frozenset({
+    "GITHUB_NACOS_SERVER_ADDR", "GITHUB_NACOS_DEV_SERVER_ADDR",
+    "GITHUB_NACOS_GROUP", "GITHUB_NACOS_USERNAME", "GITHUB_NACOS_PASSWORD",
+})
 REASON_CODES = frozenset({"LAUNCH_BINDING_MISSING", "LAUNCH_BINDING_INVALID", "RUNTIME_PREFLIGHT_FAILED",
                           "IDE_PATH_MACRO_UNSUPPORTED", "IDE_PATH_INVALID", "IDE_FILE_URI_INVALID",
                           "IDE_REFERENCE_MISSING", "IDE_REFERENCE_MISMATCH", "IDE_REFERENCE_DUPLICATE",
@@ -200,6 +205,33 @@ def private_file(path):
     return path
 
 
+def validate_dev_bootstrap(repo, required=True):
+    """只核本地引导文件的归属和 Git 边界，由 Spring 读取实际值。"""
+    repo = repo.resolve()
+    config = repo / "config"
+    if config.is_symlink():
+        raise ValueError("service private dev bootstrap directory must not be a symlink")
+    files = [config / name for name in ("application-dev.properties", "application-dev.yml", "application-dev.yaml")]
+    present = [path for path in files if path.exists() or path.is_symlink()]
+    if not present:
+        if required:
+            raise ValueError("service private dev bootstrap missing")
+        return []
+    from workspace import git
+    top = git(repo, "rev-parse", "--show-toplevel", optional=True)
+    if top.returncode or Path(top.stdout.strip()).resolve() != repo:
+        raise ValueError("service private dev bootstrap must belong to the service Git root")
+    for path in present:
+        info = path.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) not in {0o400, 0o600} or info.st_nlink != 1):
+            raise ValueError("service private dev bootstrap must be an owner-only regular file")
+        ignored = git(repo, "check-ignore", "--quiet", "--", str(path.relative_to(repo)), optional=True)
+        if ignored.returncode:
+            raise ValueError("service private dev bootstrap must be ignored and untracked")
+    return present
+
+
 def private_env(path, prefixes):
     values = {}
     for line in private_file(path).read_text().splitlines():
@@ -336,12 +368,16 @@ def configure_binding(runtime_env, dev_env, state_dir, root=ROOT, service_envs=N
     write_private(binding_path(root), json.dumps(result, indent=2) + "\n")
 
 
-def prepare(service, version, runtime_env, dev_env, state_dir, write=True, service_envs=None, service_env_file=None):
+def prepare(service, version, runtime_env, dev_env, state_dir, write=True, service_envs=None,
+            service_env_file=None, local_repo=None):
     if service not in SERVICES or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.+_-]{0,63}", version):
         raise ValueError("service or version invalid")
     environment, agent, privacy = runtime_inputs(runtime_env, dev_env)
     overrides,env_metadata=service_env.select_environment(service,service_envs,service_env_file)
     native_contents=service_env.native_env_contents(overrides)
+    # Server Jar 没有服务源码工作目录，继续使用独立的私有 env。
+    bootstrap = validate_dev_bootstrap(local_repo, required=False) if local_repo is not None else []
+    local_nacos_yaml = bool(bootstrap) and all(path.suffix in {".yml", ".yaml"} for path in bootstrap)
     state = Path(state_dir).absolute()
     directory = state / "prepared" / service
     logs = state / "logs"
@@ -350,6 +386,9 @@ def prepare(service, version, runtime_env, dev_env, state_dir, write=True, servi
     secure_directory(logs, create=write)
     app = service_env.github_environment(environment,service)
     for key in overrides:app.pop(key,None)
+    if local_nacos_yaml:
+        for key in LOCAL_NACOS_CONNECTION_KEYS:
+            app.pop(key, None)
     app.update({"APP_ENV": "dev", "GITHUB_NACOS_DEV_NAMESPACE": "github-dev",
                 "security.actuator.token": environment["GITHUB_ACTUATOR_TOKEN"],
                 "spring.application.version": version, "logging.file.name": str(logs / f"{service}.json"),
@@ -403,7 +442,7 @@ def prepare(service, version, runtime_env, dev_env, state_dir, write=True, servi
             "agent": str(agent), "privacy": str(privacy),
             "agent_config": str(agent_config), "app_config": str(app_config),
             "service_env_config":str(service_config),"service_env_sha256":hashlib.sha256(native_contents.encode("utf-8")).hexdigest(),
-            "service_environment":env_metadata,
+            "service_environment":env_metadata, "local_nacos_yaml": local_nacos_yaml,
             "project_environment_names": sorted({key for key in (*environment,*overrides) if key.startswith("GITHUB_")}),
             "jvm_arguments": [f"-javaagent:{agent}", f"-Dotel.javaagent.extensions={privacy}",
                               f"-Dotel.javaagent.configuration-file={agent_config}",
@@ -460,6 +499,13 @@ def check_idea_runtime(service, receipt, root=ROOT):
         module = config.find("module")
         if module is None or module.get("name") not in {service, f"{service}.main"}:
             raise RuntimeValidationError("IDE_MODULE_MISMATCH")
+        if receipt.get("local_nacos_yaml"):
+            workdir = options.get("WORKING_DIRECTORY", "")
+            workdir = workdir.replace("$PROJECT_DIR$", str(root)).replace("$USER_HOME$", str(Path.home()))
+            if not workdir or not Path(workdir).is_absolute() or Path(workdir).resolve() != (root / service).resolve():
+                raise RuntimeValidationError("IDE_PATH_INVALID")
+            if options.get("ACTIVE_PROFILES", "") not in {"", "dev"}:
+                raise RuntimeValidationError("IDE_APPLICATION_ARGS_OVERRIDE")
         arguments = idea_vm_arguments(options.get("VM_PARAMETERS", ""))
         references = set()
         for argument in arguments:
