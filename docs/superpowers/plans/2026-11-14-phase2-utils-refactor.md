@@ -14,7 +14,7 @@
 
 - 范围：只改个人仓库utils、rag、user、message、ai-memory、report、mcp、ai、gateway与kellen-workspace文档；美联项目不动；ai-agent不改代码。
 - 删除的类（先删35个，再按「主流用法核对」删16个）、删除与移出的依赖、保留清单，以规格「现状」各表为准。POI 6.0.0只由rag声明；`spring-boot-starter-websocket`只由user、ai-memory、rag、message、report声明。
-- 不升级、不改：MinIO 8.6.0、X File Storage 2.3.0、jjwt 0.9.1、Hutool 5.8.48、阿里云OSS 3.18.5、腾讯云COS 5.6.283、RedisTemplate的序列化方式、Nacos（`redis.yaml`已有`spring.data.redis.*`）；不清理Nacos遗留配置键与utils运维模板。
+- 不升级、不改：MinIO 8.6.0、X File Storage 2.3.0、jjwt 0.9.1、Hutool 5.8.48、阿里云OSS 3.18.5、腾讯云COS 5.6.283、RedisTemplate的序列化方式；Nacos在任务24统一整理之前不改（`redis.yaml`已有`spring.data.redis.*`）。
 - 保留：mybatis-mate、OkHttp、hutool-all、`redisson-spring-boot-starter`、AspectJ、Seata；Jedis随Redis连接改为自动配置而删除。
 - Redis分布式锁的行为不变：键名、等待时间与看门狗续期都不变；mcp的锁代码不改。防重复提交从未生效，整条删除。
 - 保留工具的改写以规格「主流用法核对」各表为准；这些工具在服务里没有调用方的，改名不需要服务配合。
@@ -32,12 +32,12 @@
 ## Review Focus
 
 1. 新加的兜底处理吞掉Spring Security的鉴权异常，未登录本应401、无权限本应403，却变成500，admin-web不再跳转登录页。期望原样抛出，由Spring Security处理。→ 任务17测试`securityExceptionsAreRethrown`。
-2. 服务的`@RestControllerAdvice`子类与utils基类（含`ResponseEntityExceptionHandler`）对同一异常各有一个处理方法，Spring启动时报`Ambiguous @ExceptionHandler`，服务起不来。期望rag删掉重复的两个处理，其他服务的子类没有这类处理。→ 任务21第3步的`RagControllerSecurityTest`、任务21至23第1步的检查、任务24第2步。
-3. Redis连接改由Spring Boot与Redisson官方starter自动配置后，登录令牌存取或mcp注册发布锁失败（连接参数、空口令处理与原先手工配置不同，或锁工具没装配上）。期望登录与mcp注册正常，Redis健康为UP。→ 任务14测试`registersLockerWhenRedissonClientPresent`、任务24第2、5步。
+2. 服务的`@RestControllerAdvice`子类与utils基类（含`ResponseEntityExceptionHandler`）对同一异常各有一个处理方法，Spring启动时报`Ambiguous @ExceptionHandler`，服务起不来。期望rag删掉重复的两个处理，其他服务的子类没有这类处理。→ 任务21第3步的`RagControllerSecurityTest`、任务21至23第1步的检查、任务25第2步。
+3. Redis连接改由Spring Boot与Redisson官方starter自动配置后，登录令牌存取或mcp注册发布锁失败（连接参数、空口令处理与原先手工配置不同，或锁工具没装配上）。期望登录与mcp注册正常，Redis健康为UP。→ 任务14测试`registersLockerWhenRedissonClientPresent`、任务25第2、5步。
 4. 数据权限改为直接构造表达式后，生成的条件与原先不同（别名、引号转义、`IN`列表），列表接口返回的数据变多或变少。期望条件文本与原先一致、出错就抛出。→ 任务12的`DataPermissionSqlHandlerTest`。
 5. POI 6的日期按秒取整、公式取缓存值等变化，让rag解析文本漂移。期望与POI 5.5.1基线一致。→ 任务20、21的基线测试。
 
-另两项由各自任务的测试与检查覆盖：`EntityBase`的`isDelete`等继承字段在Hutool与Dozer之间映射一致（任务6`copiesInheritedBaseFieldsIncludingIsDelete`）；删掉starter或类之后服务启动不缺Bean（任务24第2步）。
+另两项由各自任务的测试与检查覆盖：`EntityBase`的`isDelete`等继承字段在Hutool与Dozer之间映射一致（任务6`copiesInheritedBaseFieldsIncludingIsDelete`）；删掉starter或类之后服务启动不缺Bean（任务25第2步）。
 
 ---
 
@@ -442,6 +442,7 @@
 - Modify: rag主代码与测试里6处错误码引用，按任务15的表改为`REQUEST_PARAMETER_ERROR`、`SYSTEM_EXECUTION_ERROR`、`PERMISSION_DENIED`、`MIDDLEWARE_SERVICE_ERROR`
 - Modify: `rag/docs/ai-coding/UTILS_PUBLIC_SPEC.md`（`ReturnCode.成功`改为`ReturnCode.SUCCESS`）
 - Modify: `rag/src/main/resources/application.yml`（声明`spring.servlet.multipart.max-file-size: 1024MB`与`max-request-size: 1024MB`，替代utils删掉的`MultipartConfig`，保持现有上限）
+- Modify: `rag/src/main/resources/application*.yml`的`spring.config.import`去掉`elasticsearch.yaml`与`rabbitmq.yaml`（任务24在Nacos里删除这两个dataId）
 
 - [ ] **Step 1:** `grep -rlE "com\.google\.common|commons\.collections4|com\.aliyuncs|dozermapper|springframework\.amqp|data\.elasticsearch|com\.itextpdf|org\.apache\.pdfbox" rag/src`，再grep规格删除表中的35个类名。Expected：无输出。再`grep -rn '@ExceptionHandler' rag/src/main`，逐条确认改动后子类不再映射`Exception`或`ResponseEntityExceptionHandler`已处理的异常类型。Expected：只剩图谱、403、502三类。
 - [ ] **Step 2:** 改动如上。
@@ -456,6 +457,7 @@
 - Modify: user主代码与测试里57处错误码引用（10个常量，按任务15的表改名）；`user/src/test/java/com/kellen/auth/controller/AuthResourceControllerTest.java`第112、146行的`$.code`改用`getCode()`，第113、147行改为`jsonPath("$.msg").doesNotExist()`
 - Modify: 文档：`user/README.md`第432行（删`msg`一行，补`traceId`一行「当前请求的追踪号，没有时不输出」）、`user/docs/ai-coding/UTILS_PUBLIC_SPEC.md`第62行、`user/docs/ai-coding/PROJECT_CODING_SPEC.md`第418、421行；message的`docs/ai-coding/UTILS_PUBLIC_SPEC.md`与`PROJECT_CODING_SPEC.md`里同类的行
 - Modify: user涉及Redis的4个测试类，若依赖`ConfigClientController`产出的Bean，按任务14的自动配置调整
+- Modify: 两仓`src/main/resources/application*.yml`的`spring.config.import`去掉`elasticsearch.yaml`与`rabbitmq.yaml`
 
 - [ ] **Step 1:** 两仓分别做任务21第1步的依赖grep；再`grep -rn '@ExceptionHandler' src/main`。Expected：依赖grep无输出；两仓的`GlobalExceptionHandler`子类没有处理方法。
 - [ ] **Step 2:** 改动如上。
@@ -478,6 +480,7 @@
 
 - ai：主代码与测试里2处错误码引用改为`USER_AUTHENTICATION_FAILED`、`PERMISSION_DENIED`；自有的`AiChatResponse`异常处理不动；`ai/src/test/java/com/ai/TestAiApplication.java`的扫描排除规则去掉已删的类，Redisson自动配置的排除保留。
 - mcp：涉及Redis的2个测试类，若依赖`ConfigClientController`产出的Bean，按任务14的自动配置调整。
+- ai、ai-memory、report、mcp：`src/main/resources/application*.yml`的`spring.config.import`去掉`elasticsearch.yaml`与`rabbitmq.yaml`。
 - 文档：ai的`docs/ai-coding/UTILS_PUBLIC_SPEC.md`第53行；ai-memory、report、mcp的`docs/ai-coding/UTILS_PUBLIC_SPEC.md`与`PROJECT_CODING_SPEC.md`里同类的行。
 
 - [ ] **Step 1:** 依赖utils的四个仓分别做任务21第1步的依赖grep与`grep -rn '@ExceptionHandler' src/main`；ai另外删除`ai/src/test/java/com/ai/TestAiApplication.java`里排除`RequestRequiredAspect`的扫描过滤正则。Expected：依赖grep无输出；ai-memory、report、mcp的`GlobalExceptionHandler`子类没有处理方法，ai只有自己的`com.kellen.exception.ApiExceptionHandler`。
@@ -485,7 +488,26 @@
 - [ ] **Step 3:** 各仓`./gradlew test`加密钥扫描；四个依赖utils的仓分别跑任务22第3步的两个grep。Expected：测试全过，grep无输出（文档里与响应字段无关的`msg`逐条确认后保留）。
 - [ ] **Step 4:** 各仓提交并交付，逐个读回CI为success。
 
-### Task 24: 整体验证
+### Task 24: Nacos整理与逐行注释（github-dev）
+
+**Files（`utils/ops/github-dev/`下）:**
+- Modify: `nacos/DEFAULT_GROUP/*.yaml`（删除不再使用的配置项，每行补注释）、`nacos/catalog.json`、`nacos/retired-dataids.json`、`nacos/README.md`
+- Delete: `nacos/DEFAULT_GROUP/{elasticsearch,rabbitmq}.yaml`（登记到`retired-dataids.json`）
+- Create/Modify: `tests/`下的注释完整性检查与受影响的现有测试
+
+前提：任务21–23已把各服务升到1.6.8，并去掉对`elasticsearch.yaml`、`rabbitmq.yaml`的导入。开工前读`utils/docs/ai-coding/NACOS_COMMENT_SPEC.md`与`NACOS_CONFIG_SPEC.md`。凭据只经私有`~/.config/kellen-github/dev.env`与现有脚本使用，不打印、不写入Git与台账。
+
+- [ ] **Step 1: 写检查**：在`tests/`加`test_every_line_commented`：逐个读取`nacos/DEFAULT_GROUP/*.yaml`，每个非空、非注释的行，其上方（同一缩进块内）或行尾必须有注释；文件开头必须有职责、环境、消费者说明。
+- [ ] **Step 2:** 运行`python3 -m unittest discover -s utils/ops/github-dev/tests`。Expected：新检查失败，列出缺注释的行。
+- [ ] **Step 3: 只读盘点**：`maintain_nacos_catalog.py`预演模式（不加`--apply`）读取远端`github-dev/DEFAULT_GROUP`全部dataId并备份到Git外0700目录；列出远端有而catalog没有的dataId，以及`retired-dataids.json`里远端仍在的旧项。Expected：备份成功，得到远端清单。
+- [ ] **Step 4: 找出没用的配置**：dataId以各服务`spring.config.import`为准；配置项逐个对照代码（`@Value`、`@ConfigurationProperties`前缀、Spring Boot与Dubbo、Seata、MyBatis-Plus等框架键、`${}`引用）确认无人读取。清单记入台账。Expected：至少包含`elasticsearch.yaml`、`rabbitmq.yaml`与已删功能的参数。
+- [ ] **Step 5: 改模板**：删除没用的项，按规范补齐每一行注释，更新catalog、退役清单与README。再跑Step 2的命令。Expected：全部通过。
+- [ ] **Step 6: 渲染并比对**：`render_nacos.py`渲染到私有目录，与Step 3的备份逐文件比较解析结果。Expected：除计划删除的项外，键、值、列表顺序一致，差异只有注释。
+- [ ] **Step 7: 发布**：按现有脚本CAS发布并逐文件读回；退役dataId用`maintain_nacos_catalog.py --retire --apply`（配`--previous`快照）删除。Expected：读回一致，退役项远端不存在。
+- [ ] **Step 8:** 重启本机各服务。Expected：健康为UP，启动日志没有缺少配置的报错。
+- [ ] **Step 9:** utils提交`chore(ops): 整理github-dev Nacos配置并逐行补注释`（只动`ops/`，按独立运维边界不升版本），交付并读回CI。
+
+### Task 25: 整体验证
 
 - [ ] **Step 1:** 确认本机运行的是个人项目的服务。若7100等端口被其他项目占用，先请用户切换，不往其他项目的服务发请求。
 - [ ] **Step 2:** 在IDEA启动8个服务与ai-agent。Expected：启动日志无`NoSuchBeanDefinitionException`、`ClassNotFoundException`、`NoClassDefFoundError`；各服务`/actuator/health`为UP。
@@ -494,7 +516,7 @@
 - [ ] **Step 5:** 先在`chain-verify.py`登录之后加两个请求：经网关按user的路由前缀，对一个`@RequestBody`接口发送`{bad`，再请求一个不存在的路径；断言分别为400与404，报文`success`为false、`code`为`A0400`与`A0001`、没有`msg`，报文里的`traceId`与响应头`traceId`一致（两处都没有时记为本机未开启链路）。再运行整链复验：`KW_PROBE_PASSWORD=<用户提供的本机测试口令> python3 -I <台账目录>/chain-verify.py`。Expected：两个错误请求断言通过；登录、message→user、资源、RAG、AI对话全部200，对话无error事件，最后一行`phase 2 chain verification OK`。
 - [ ] **Step 6:** 台账记录各项证据（提交、CI、制品读回、启动与接口结果）。
 
-### Task 25: 收尾
+### Task 26: 收尾
 
 - [ ] **Step 1:** 核对规格每一节都有对应证据，台账汇总所有`Ruling:`与推迟的小问题。
 - [ ] **Step 2:** 按执行方式做全分支最终复查。

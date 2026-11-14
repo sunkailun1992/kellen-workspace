@@ -17,6 +17,8 @@
 - 20:36「我记得有关Redis的锁，不要影响了，可以优化。采用主流的工具类方式」：Redis分布式锁与防重复提交保持行为不变，按Redisson的主流用法优化锁工具类。
 - 20:54「按建议写进」：统一返回对象`ApiResponse`、统一异常处理、错误码`ReturnCode`按下文改；`EntityBase`本阶段只改两处接口文档说明，字段与数据库列改名放到第3阶段与Flyway一起做。
 - 21:13「utils所有工具也都检查修改一下，要按主流使用方法以github关注度最高的项目做参考」：保留的77个类逐个对照同类里GitHub上最热门项目的用法核对（Hutool、OkHttp、Redisson、MyBatis-Plus、Spring Boot、芋道ruoyi-vue-pro、若依），结果见「主流用法核对」。
+- 2026-11-15 03:12「全部按计划执行。不要询问我了。」：计划内事项照做，不再逐项询问。
+- 2026-11-15 03:17「对了nacos也要整理一下，没用的全部删除吧……对了nacos配置文件也补全一下注解，之前要求过nacos配置每行都要注解」：github-dev的Nacos一起整理，删除不再使用的dataId与配置项，每行补注释，见「Nacos整理」。登录用私有`dev.env`里已配置的Nacos账号，经`utils/ops/github-dev/scripts`现有脚本备份、CAS发布与读回。
 - 21:27「按建议写进」：按「主流用法核对」改。由此改判三项：防重复提交从未生效，整条删除（不再是「行为不变」）；`ServiceShutDownEndpoint`、`DataSourceUtil`由保留改为删除；Jedis随Redis连接改由Spring Boot自动配置而删除。
 
 范围只有个人GitHub项目，美联项目不动（本次只读参考过美联kellen项目：PDF、钉钉、短信、直播、工作流、防重复提交注解、请求日志注解、RabbitMQ与Spring缓存在那边同样无人使用）。
@@ -182,6 +184,15 @@ Redis锁现状：
 - ai：自有的`AiChatResponse`异常处理不动。
 - rag：utils删掉`MultipartConfig`后，在自己的`application.yml`声明`spring.servlet.multipart.max-file-size`与`max-request-size`为1024MB，保持现有上限。
 - user、mcp：涉及Redis的测试若依赖`ConfigClientController`产出的Bean，按新的自动配置调整；ai测试启动类的扫描排除规则去掉已删的类。
+- 导入了`elasticsearch.yaml`、`rabbitmq.yaml`的服务（ai、ai-memory、mcp、message、rag、report、user）：在升级的同一个提交里去掉这两个导入。
+
+### Nacos整理（github-dev，所有服务升到1.6.8之后）
+
+- 先读`utils/docs/ai-coding/NACOS_COMMENT_SPEC.md`与`NACOS_CONFIG_SPEC.md`，用现有维护脚本只读盘点远端`github-dev/DEFAULT_GROUP`全部dataId并备份到Git外的0700目录。
+- 删除没用的：dataId以各服务`spring.config.import`为准，至少包括`elasticsearch.yaml`、`rabbitmq.yaml`，以及`retired-dataids.json`里登记过但远端仍在的旧项；配置项逐个对照代码（`@Value`、`@ConfigurationProperties`前缀、Spring Boot与Dubbo、Seata、MyBatis-Plus等框架键、`${}`引用）确认无人读取后删除。
+- 补注释：按规范给每一行补注释，dataId头部写职责、环境、消费者，每个参数写用途、单位、格式、空值与开关影响；在`utils/ops/github-dev/tests`里加检查，保证每个非注释行都有注释。
+- 发布：渲染后与备份逐文件比对，除计划删除的项外键、值、列表顺序不变；CAS发布、逐文件读回；退役dataId按脚本的退役流程删除。凭据只经私有`dev.env`与现有脚本使用，不写入Git、日志或台账。
+- 模板、catalog、退役清单与README的改动只在`utils/ops/`，按独立运维边界提交，不升utils版本。
 - 各服务`docs/ai-coding`与README里把`msg`列为响应字段、写中文错误码常量的地方同步更新；`archive/`下的历史文件不改。
 - rag：自行声明`poi-ooxml` 6.0.0，分两个提交：第一个提交在utils 1.6.7（POI 5.5.1）下加测试，把解析输出固定下来；第二个提交再升utils与POI。测试文件至少覆盖：Excel带缓存值的公式、无缓存值的公式、日期与数字格式；Word普通段落、表格、行内内容控件中的文字、块级内容控件。升到6.0.0后输出必须一致；内容控件文字丢失或公式输出变化时，修改解析器恢复原输出，确属修正原有错误的差异在台账记录裁决后接受。已入库的知识不重新解析。
 
@@ -208,6 +219,7 @@ Redis锁现状：
 - utils整版回退时，各服务把依赖与CI检出提交改回1.6.7对应值；移到服务里的websocket与POI声明可以保留，不影响旧版。
 - 若切换时清理过`cache:*`键，缓存条目按需重建，无需恢复。
 - Redis连接方式的改动不涉及Nacos，退回1.6.7即恢复原连接方式。
+- Nacos整理前的备份保存在Git外的0700目录；服务退回1.6.7时，先按备份恢复退役的dataId与删除的配置项，再恢复旧导入。
 
 ## 不在本阶段
 
@@ -222,7 +234,7 @@ Redis锁现状：
 - 数据源改用dynamic-datasource原生配置（含Seata代理）、DDL改Flyway：第3阶段；OSS直传签名升V4会改前端上传字段，不在本阶段。
 - Docker镜像构建验证：另做。
 - Hutool（已是最新5.8.48）、阿里云OSS 3.18.5、腾讯云COS 5.6.283等其他依赖不升级；RedisTemplate序列化方式、Spring Boot 4.1。
-- Nacos里已删功能遗留的配置键（如RabbitMQ、请求日志索引、短信与钉钉参数），以及utils运维模板里的`elasticsearch.yaml`、`rabbitmq.yaml`，本阶段不清理；删除后这些键不再被读取。各服务启动类只排除`DataSourceAutoConfiguration`，删除RabbitMQ与ES的starter不会触发「排除的自动配置类不存在」的启动错误。
+- 各服务启动类只排除`DataSourceAutoConfiguration`，删除RabbitMQ与ES的starter不会触发「排除的自动配置类不存在」的启动错误。（Nacos遗留配置原定不清理，03:17起改为在「Nacos整理」中清理。）
 - 美联项目。
 
 ## 留给实施确定的细节
