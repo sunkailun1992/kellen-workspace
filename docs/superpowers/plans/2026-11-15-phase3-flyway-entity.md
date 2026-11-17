@@ -4,6 +4,8 @@
 
 **Goal:** 7个有库服务的建表与初始化全部改由各自的Flyway迁移管理，删除MyBatis-Plus DDL方式；实体基类按芋道两层只留审计字段并自动填充创建人、修改人；数据源改用dynamic-datasource原生配置与其Seata集成；删除没用的列与表；utils只发1.6.9一个版本。
 
+> **执行中修订（2026-11-16、17）：** 基类字段、迁移编号、Seata 与 OSS 的做法按 spec「修订记录」调整：旧字段全部保留、不删列，审计列按主流多数为 `create_by`、`update_by`，新增 `create_dept`，Seata 固定开启并由 utils 提前迁移。下面各步骤里「按芋道」「V4 删列」等初版写法以 spec 为准。
+
 **Architecture:** 先在NAS临时库实测Flyway 11.14.1与PostgreSQL 18，以及baseline接管真实库后结构与空库一致，同时只读统计删除候选。utils分三个提交后发布1.6.9；Nacos先让新旧数据源键并存；7个服务各一个提交（迁移、实体与SQL改名、配置、真库迁移测试、CI加PostgreSQL 18服务容器）；最后整体运行验证并删除旧键。
 
 **Tech Stack:** Gradle 9.9.1、JDK 21、Spring Boot 4.0.9、Flyway 11.14.1、PostgreSQL 18（NAS容器`orb-postgres`）、pgjdbc 42.7.14、MyBatis-Plus 3.5.18.1、dynamic-datasource 4.6.0、Druid 1.2.28、Seata 2.6.0、JUnit 5。

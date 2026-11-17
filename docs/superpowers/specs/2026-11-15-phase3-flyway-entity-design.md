@@ -16,15 +16,22 @@
 
 为什么现在做：第4、5阶段（RocketMQ、Keycloak）都要改表。现在的建表靠MyBatis-Plus DDL加utils自写执行器，新库要先手工执行公共脚本，也不校验已执行的脚本是否被改过；基类让每张表都带着4个大多没人用的通用列，审计字段命名与主流不一致，创建人、修改人从不填写。
 
+## 修订记录
+
+- 2026-11-16 22:00–22:15（用户决定）：实体基类恢复旧字段（`id`、`code`、`description`、`label`、`sorting`、`version`），迁移不删任何列（已提交但没在任何真实库执行过的V4删列迁移撤回）；每行自动记录创建部门，按部门过滤仍按表开启；Seata固定开启、不设总开关；只删OSS专用代码；清理Nacos。
+- 2026-11-16 23:31（用户）：「这些基础字段，每次创建表都必须存在的」——每张表都必须包含全部基础字段，不得省略。
+- 2026-11-16 23:39、2026-11-17 10:03（用户）：参考主流项目以多数为准，不只参考芋道一家；2026-11-17 09:51 定审计列改为多数项目的`create_by`、`update_by`。
+- 下文已按以上决定改写；原「字段集合按芋道」「基类只留审计字段」「V4删列」等初版做法见Git历史。
+
 ## 判定口径
 
-- 主流规范的取法：字段集合与自动填充按芋道ruoyi-vue-pro（`BaseDO`、`TenantBaseDO`、`DefaultDBFieldHandler`）；列与字段命名按阿里巴巴Java开发手册（布尔概念的列用`is_`前缀，对象字段不带`is`）；迁移做法按Flyway官方文档与Spring Boot的Flyway集成；数据源与Seata按dynamic-datasource官方集成方式；Java时间类型与SQL类型按JDBC 4.2映射。
-- 冲突时：命名以阿里手册为准，字段集合以芋道为准；与admin-web正在使用的接口字段冲突时兼容优先，接口字段留到第6阶段与前端一起改。
+- 主流规范的取法：对照多个主流项目（RuoYi-Vue、RuoYi-Vue-Plus、JeecgBoot、芋道ruoyi-vue-pro、MyBatis-Plus官方文档），以多数做法为准，不以单个项目为准；列与字段命名按阿里巴巴Java开发手册（布尔概念的列用`is_`前缀，对象字段不带`is`）；迁移做法按Flyway官方文档与Spring Boot的Flyway集成；数据源与Seata按dynamic-datasource官方集成方式；Java时间类型与SQL类型按JDBC 4.2映射。
+- 冲突时：以多数主流项目为准；多数之间仍不一致时按阿里手册；与admin-web正在使用的接口字段冲突时兼容优先，接口字段留到第6阶段与前端一起改。
 - 「没用」：服务代码、手写SQL、HTTP接口、rpc-api与admin-web都不读写，且库里没有数据（只读计数核对）。有数据的不删，停下报告用户。
 
 ## 依据
 
-- 芋道ruoyi-vue-pro的[`BaseDO`](https://github.com/YunaiV/ruoyi-vue-pro/blob/master/yudao-framework/yudao-spring-boot-starter-mybatis/src/main/java/cn/iocoder/yudao/framework/mybatis/core/dataobject/BaseDO.java)：只有`createTime`、`updateTime`、`creator`、`updater`、`deleted`五个字段，没有id与版本号；租户字段在`TenantBaseDO`。
+- 主流项目的实体基类（2026-11-17读源码核对）：[RuoYi-Vue `BaseEntity`](https://github.com/yangzongzhuan/RuoYi-Vue/blob/master/ruoyi-common/src/main/java/com/ruoyi/common/core/domain/BaseEntity.java)为`createBy`、`createTime`、`updateBy`、`updateTime`、`remark`；[RuoYi-Vue-Plus `BaseEntity`](https://github.com/dromara/RuoYi-Vue-Plus/blob/5.X/ruoyi-common/ruoyi-common-mybatis/src/main/java/org/dromara/common/mybatis/core/domain/BaseEntity.java)为`createDept`、`createBy`、`createTime`、`updateBy`、`updateTime`（租户在`TenantEntity`）；[JeecgBoot `JeecgEntity`](https://github.com/jeecgboot/JeecgBoot/blob/main/jeecg-boot/jeecg-boot-base-core/src/main/java/org/jeecg/common/system/base/entity/JeecgEntity.java)为`id`、`createBy`、`createTime`、`updateBy`、`updateTime`；[芋道 `BaseDO`](https://github.com/YunaiV/ruoyi-vue-pro/blob/master/yudao-framework/yudao-spring-boot-starter-mybatis/src/main/java/cn/iocoder/yudao/framework/mybatis/core/dataobject/BaseDO.java)为`createTime`、`updateTime`、`creator`、`updater`、`deleted`。创建人、更新人多数用`createBy`、`updateBy`，只有芋道用`creator`、`updater`；逻辑删除各家不一（若依系与JeecgBoot用`del_flag`，芋道与MyBatis-Plus示例用`deleted`），按阿里手册用布尔列`is_deleted`配字段`deleted`。
 - [阿里巴巴Java开发手册（p3c）](https://github.com/alibaba/p3c)：表达是与否概念的列命名为`is_xxx`，POJO布尔字段不加`is`前缀；表必备`id`、`create_time`、`update_time`。
 - [Flyway支持的数据库与版本](https://documentation.red-gate.com/flyway/getting-started-with-flyway/system-requirements/supported-databases-and-versions)：兼容表列到PostgreSQL 18；[发布说明](https://documentation.red-gate.com/fd/release-notes-for-flyway-engine-179732572.html)未单列18，须实测。
 - Spring Boot 4.0.9依赖管理（本机Gradle缓存核对）：Flyway 11.14.1，模块`spring-boot-starter-flyway`与`flyway-database-postgresql`。
@@ -45,10 +52,10 @@
    - 采用：每个服务自带完整的迁移链，包括Seata的`undo_log`；utils不放任何迁移SQL。
    - 未采用：utils提供公共迁移。版本号要跨仓库协调，utils升级就会改各服务的库结构。
 4. **基类**
-   - 采用：芋道的两层：审计基类加租户子类；`id`、`version`和在用的通用字段由实体自己声明，`label`删除。
-   - 未采用：保留现基类只改名。每张表继续带没人用的列，与主流不一致。
+   - 采用：两层：公共字段基类加租户子类（RuoYi-Vue-Plus的`BaseEntity`/`TenantEntity`、芋道的`BaseDO`/`TenantBaseDO`都是两层）。旧基类的公共字段全部保留在基类（`id`、`code`、`description`、`label`、`sorting`、`version`），审计列按多数命名`create_time`、`create_by`、`update_time`、`update_by`，租户子类另加`tenant_id`与创建部门`create_dept`（对照RuoYi-Vue-Plus的`createDept`）。每张表都必须有全部基础字段。
+   - 未采用：基类只留审计与逻辑删除字段、其余由实体自己声明（初版）。用户要求旧字段全部保留、每张表都必须齐全。
 5. **时间类型**
-   - 采用：审计时间统一为`timestamp`配`LocalDateTime`（39张表里36张已经如此，符合JDBC 4.2映射与芋道做法）；ai存储台记录真实时刻的列（操作开始、结束、凭据更新）保留`timestamptz`配`Instant`。
+   - 采用：审计时间统一为`timestamp`配`LocalDateTime`（39张表里36张已经如此，符合JDBC 4.2映射，若依系、芋道等主流项目的审计时间也都不带时区）；ai存储台记录真实时刻的列（操作开始、结束、凭据更新）保留`timestamptz`配`Instant`。
    - 未采用：全部改为`timestamptz`配`OffsetDateTime`（PostgreSQL社区更推荐）。要改所有实体和JSON格式，而全系统只用+8一个时区，收益小；以后需要多时区再统一。
 6. **数据源**
    - 采用：dynamic-datasource原生配置`spring.datasource.dynamic.*`，开启它的Seata集成（AT），关闭Seata自带的自动代理。
@@ -74,13 +81,12 @@
 
 1. **删除旧建表方式**：`PostgresqlDdlApplicationRunner`、`PostgresqlDdlAutoConfiguration`、`PostgresqlDdlScriptPolicy`及其测试与自动配置登记；`db/postgresql/common-infra-schema.sql`与`db/common-infra-schema.sql`。
 2. **引入Flyway**：以`api`依赖`spring-boot-starter-flyway`与`flyway-database-postgresql`，版本由Spring Boot依赖管理决定。utils不放迁移SQL。
-3. **基类按芋道两层**（类名沿用`EntityBase`，新增`TenantEntityBase`）：
-   - `EntityBase`（抽象）：`createTime`（插入时填）、`updateTime`（插入与更新时填）、`creator`（插入时填）、`updater`（插入与更新时填）、`deleted`（`@TableLogic`，列`is_deleted`）。日期的JSON格式与注解沿用现有写法（`yyyy-MM-dd HH:mm:ss`，GMT+8）。
-   - `TenantEntityBase extends EntityBase`：`tenantId`（插入时填）。
-   - `id`（仍为字符串、雪花ID）、`version`（仍配乐观锁插件）、`code`、`description`、`sorting`不在基类，由用到的实体自己声明；`label`删除。
-4. **自动填充**：`MyMetaObjectHandler`在插入时填`createTime`、`updateTime`、`creator`、`updater`、`tenantId`，更新时填`updateTime`、`updater`。创建人、修改人取当前登录用户ID；没有登录用户（种子、后台任务）时不填，与芋道一致。
-5. **数据权限**：默认用户列由`create_name`改为`creator`（github-dev现配`owner_user_id`，不受影响）。
-6. **数据源**：删除`DynamicDataSourceConfig`，改用dynamic-datasource原生配置：`primary`为master，`datasource.master`与`datasource.gray`，连接池类型Druid，`seata: true`、`seata-mode: AT`。连接池上限、超时与健康检查参数改由配置声明并保持现值（master 4、gray 2、连接3秒、读30秒）。灰度切库沿用`DynamicSourceTtl`，数据源名master、gray不变。
+3. **基类两层**（类名沿用`EntityBase`，新增`TenantEntityBase`）：
+   - `EntityBase`（抽象）：`id`（字符串雪花ID）、`code`、`description`、`createTime`（插入时填）、`createBy`（插入时填）、`updateTime`（插入与更新时填）、`updateBy`（插入与更新时填）、`deleted`（`@TableLogic`，列`is_deleted`）、`label`、`sorting`、`version`（乐观锁）。日期的JSON格式与注解沿用现有写法（`yyyy-MM-dd HH:mm:ss`，GMT+8）。
+   - `TenantEntityBase extends EntityBase`：`tenantId`（插入时填）、`createDept`（插入时取登录用户部门）。实体统一继承`TenantEntityBase`，每张表都必须有全部基础字段。
+4. **自动填充**：`MyMetaObjectHandler`在插入时填`createTime`、`updateTime`、`createBy`、`updateBy`、`tenantId`、`createDept`，更新时填`updateTime`、`updateBy`。创建人、修改人取当前登录用户ID；没有登录用户（种子、后台任务）时不填，与RuoYi-Vue-Plus、芋道一致。
+5. **数据权限**：默认用户列`create_by`、默认部门列`create_dept`；过滤按表在`security.data-permission.table-rules`开启（github-dev的三张表规则写明了各自的列）。
+6. **数据源**：删除`DynamicDataSourceConfig`，改用dynamic-datasource原生配置：`primary`为master，`datasource.master`与`datasource.gray`，连接池类型Druid，`seata: true`（固定开启、不设总开关）、`seata-mode: AT`；utils的`EarlyFlywayMigration`在创建任何Bean之前先按`spring.flyway.*`迁移，新空库开着Seata也能首次启动。连接池上限、超时与健康检查参数改由配置声明并保持现值（master 4、gray 2、连接3秒、读30秒）。灰度切库沿用`DynamicSourceTtl`，数据源名master、gray不变。
 7. **文档**：README、`UTILS_TOOL_CATALOG.md`、`PROJECT_CODING_SPEC.md`（公共治理字段改为新基类）、`NACOS_CONFIG_SPEC.md`、`AGENTS.md`同步；删去「空库首次启动前手工执行`common-infra-schema.sql`」「修改DDL前确认`ddl_history`」等旧规则，改为Flyway规则：已发布的迁移文件不再修改，改结构只新增版本。
 
 ### 服务（ai、ai-memory、message、user、mcp、rag、report，每个服务一个提交）
@@ -88,9 +94,9 @@
 1. **迁移文件**放`src/main/resources/db/migration`：
    - `V1__baseline.sql`：现有结构快照，按现在的执行顺序合并现有脚本（ai存储三表只取一份定义），包含`undo_log`，不包含`ddl_history`；user的V1包含现有种子。只在空库上执行。
    - `V2__drop_ddl_history.sql`：删除`ddl_history`（不存在时跳过）。
-   - `V3__rename_audit_columns.sql`：所有业务表`create_date_time`→`create_time`、`modify_date_time`→`update_time`、`create_name`→`creator`、`modify_name`→`updater`、`is_delete`→`is_deleted`。
-   - `V4__drop_unused_columns.sql`：所有业务表删除`label`；`code`、`description`、`sorting`只在不用它的表上删除。迁移里先核对整列为空（全部为NULL或等于列默认值），不为空就让迁移失败，服务启动即停。
-   - 仅ai再加一版：存储三表的审计列由`timestamptz`改为`timestamp`（按Asia/Shanghai换算）；删除8张未被引用的表（同样只删空表）。
+   - `V3__rename_audit_columns.sql`：所有业务表`create_date_time`→`create_time`、`modify_date_time`→`update_time`、`create_name`→`creator`、`modify_name`→`updater`、`is_delete`→`is_deleted`（已提交，不再修改）。
+   - `V4__add_create_dept.sql`：所有业务表加`create_dept`（不删任何列）；`V5__rename_create_by_update_by.sql`：`creator`→`create_by`、`updater`→`update_by`。
+   - ai：`V4`删8张未被引用的空表并把存储三表审计列由`timestamptz`改为`timestamp`（按Asia/Shanghai换算），`V5`给7张业务表、`V6`给存储三表加`create_dept`，`V7`改名`create_by`、`update_by`。
    - rag、mcp、report：V1只有`undo_log`，V2删除`ddl_history`。
    - Flyway配置放各服务`application.yml`（不分环境）：`locations: classpath:db/migration`、`baseline-on-migrate: true`、`baseline-version: 1`、`validate-on-migrate: true`、`clean-disabled: true`；连接引用master数据源的同一组URL、账号、密码。
 2. **删除**：各服务的`PostgresqlDdl`、`db/postgresql/`下的脚本、`db/`下的历史MySQL脚本。
@@ -142,7 +148,7 @@
 
 ## 不在本阶段
 
-- 主键改为Long、类名改为`BaseDO`：不改，接口与RPC契约都用字符串ID。
+- 主键改为Long：不改，接口与RPC契约都用字符串ID（JeecgBoot也用字符串主键）。
 - `sorting`→`sort`以及admin-web在用字段的改名：第6阶段与前端一起。
 - 创建人来源换成Keycloak：第5阶段。
 - RocketMQ：第4阶段。
