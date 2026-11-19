@@ -519,7 +519,8 @@ def check_idea_runtime(service, receipt, root=ROOT):
                 continue
             if argument.startswith("-javaagent:") or (argument.startswith("-D") and ide_controlled_env_name(argument[2:].split("=", 1)[0], receipt)):
                 raise RuntimeValidationError("IDE_VM_OVERRIDE")
-        if references != {"agent", "privacy", "agent_config", "app_config"}:
+        # 观测可选：完全不挂探针与观测配置时按不开观测放行（service.env 仍照常刷新）；只挂一部分视为配错。
+        if references and references != {"agent", "privacy", "agent_config", "app_config"}:
             raise RuntimeValidationError("IDE_REFERENCE_MISSING")
         try:
             validate_idea_application_args(idea_vm_arguments(options.get("PROGRAM_PARAMETERS", "")), receipt)

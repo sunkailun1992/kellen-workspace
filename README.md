@@ -14,11 +14,13 @@
 
 IDE原生开发与服务器Jar入口共用 `scripts/observability_runtime.py` 的完整 preflight：固定官方 OTel Java agent `2.33.1` 的 SHA-256/版本，以及本地构建隐私扩展 `0.1.2` 的 SHA-256/兼容版本；任一缺失、摘要或版本不符均在服务 JVM 启动前拒绝。仅给选定服务挂 agent，不使用全局 `JAVA_TOOL_OPTIONS`，不影响编译器和测试 JVM。
 
+观测是可选项。原生运行配置可以一个观测 VM 参数都不挂（agent、隐私扩展、`otel.javaagent.configuration-file`、`spring.config.additional-location` 四项全无），此时服务只用 Nacos 与服务仓库的 `config/application-dev.yml`，Before launch 的 preflight 照常刷新 `service.env`；四项只挂一部分视为配错，以 `IDE_REFERENCE_MISSING` 拒绝。不挂时受管 `application.properties` 不加载，各项按服务自身缺省：Dubbo 端口沿用 `dubbo.yaml` 的 `-1`，日志为 Spring Boot 默认控制台格式，`fleet.observability.enabled` 缺省关闭，独立管理端口不启用，未配置 `security.actuator.token` 时受保护的 Actuator 端点返回 401。
+
 先按 `utils/ops/github-dev/observability/agent-extension/README.md` 准备两个 Git 外制品。私有 runtime env 提供 `OTEL_JAVAAGENT_PATH`、`OTEL_JAVAAGENT_SHA256`、`FLEET_PRIVACY_EXTENSION_PATH`、`FLEET_PRIVACY_EXTENSION_SHA256`、`OTEL_EXPORTER_OTLP_ENDPOINT` 和需要的 `OTEL_EXPORTER_OTLP_HEADERS`；私有 dev env 提供既有 `GITHUB_*` 配置及 `GITHUB_ACTUATOR_TOKEN`。两文件必须由当前用户持有、0600、非 symlink，内容按简单 env 格式解析，不执行 shell。
 
 gateway、ai-agent 的独立管理端口为 `17100`、`17310`。私有 runtime env 必须显式提供 `FLEET_MANAGEMENT_BIND_ADDRESS`，与 NAS Prometheus 目标一致，仅接受明确私网地址；不从 OTLP 出站路由猜入站网卡，不默认绑定所有接口。其它服务沿用受保护 Actuator 入口。
 
-三个 Dubbo 提供方共用准备入口分配固定 Tri 端口：`user=27500`、`rag=27200`、`ai-memory=27301`；其余六个服务不写 RPC 端口。端口写入受管 `application.properties`，由现有 `spring.config.additional-location` 加载，原生 IDEA 与服务器 Jar 使用相同设置。实际 Boot 4.0.4 / Nacos 2025.1.0.0 loader 的离线配置验证确认此文件覆盖导入的 `dubbo.protocol.port=-1`；不依赖各 JVM 同时探测空闲端口。启动前仍须核对端口无人占用，发现未知监听进程应停止切换，不自动终止它。具体原理、覆盖保护与验收边界见 [Dubbo 固定端口说明](docs/dubbo-provider-ports.md)。
+挂观测参数时，三个 Dubbo 提供方共用准备入口分配固定 Tri 端口：`user=27500`、`rag=27200`、`ai-memory=27301`；其余六个服务不写 RPC 端口。不挂观测参数时不加载该文件，三者沿用 `dubbo.yaml` 的 `-1` 自动端口。端口写入受管 `application.properties`，由现有 `spring.config.additional-location` 加载，原生 IDEA 与服务器 Jar 使用相同设置。实际 Boot 4.0.4 / Nacos 2025.1.0.0 loader 的离线配置验证确认此文件覆盖导入的 `dubbo.protocol.port=-1`；不依赖各 JVM 同时探测空闲端口。启动前仍须核对端口无人占用，发现未知监听进程应停止切换，不自动终止它。具体原理、覆盖保护与验收边界见 [Dubbo 固定端口说明](docs/dubbo-provider-ports.md)。
 
 ### 一次配置本机私有引用
 

@@ -10,6 +10,8 @@
 
 Dubbo 3.3.6 对 `port<=0` 的自动选取先探测 socket，关闭后再启动实际协议监听，选中端口仅在当前 JVM 内缓存。不同 JVM 并行启动时不能靠该缓存互相预留端口。本次故障已有 Dubbo 启动阶段的 `BindException`，但未取得其具体冲突端口，不把某个默认或临时端口当成已证实的故障现场。
 
+固定端口只随受管 `application.properties` 生效。2026-11-19 起原生 IDEA 运行可以不挂观测参数，此时不加载该文件，三个提供方沿用 `dubbo.yaml` 的 `-1` 自动端口。自动选端口的竞争窗口只在两个提供方几乎同时导出服务时出现；若再遇 `BindException`，先记下冲突端口，确认是提供方互抢后再把端口写进该服务自己的 Nacos 配置，不写进 JVM 参数。
+
 `observability_runtime.prepare()` 只给上述三服务写入 `dubbo.protocol.port`，并在安全回执提供整数 `rpc_port`；其它服务该字段为 `null`。`write=False` 和服务器 `--dry-run` 不写配置或启动 JVM。受管文件沿现有 `spring.config.additional-location` 引用加载，不增加 Gradle Before Run，也不改变原生 Spring Boot/Application Run/Debug。
 
 配置优先级已用实际运行 Jar 内的 Spring Boot 4.0.4、Alibaba Nacos 2025.1.0.0 验证：保留原 `application.yml`、`application-dev.yml` 及十四个 Nacos import，以合成 `ConfigService` 替代传输，实际执行 `ConfigDataEnvironmentPostProcessor` 与 `NacosConfigDataLoader`。没有额外文件时，合成 Nacos 的端口为 `-1`；加入受管文件后端口为固定值，Nacos 来源仍实际参与加载。此验证不连接 Nacos、不创建应用上下文、不执行任何业务。

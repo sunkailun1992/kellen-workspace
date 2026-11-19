@@ -454,6 +454,29 @@ class RuntimePreparationTests(unittest.TestCase):
                     runtime.check_idea_runtime("gateway", receipt, self.root)
                 self.assertEqual(error.exception.reason_code, expected)
 
+    def test_idea_runtime_without_observability_arguments_is_allowed_but_partial_is_rejected(self):
+        """观测可选：完全不挂探针与观测配置时放行；只挂一部分仍按缺少引用拒绝。"""
+        path = self.create_idea_fixture()
+        _, _, after, _ = idea.candidate(self.root, self.inputs)
+        receipt = runtime.prepare("gateway", "1.2.3", **self.inputs)
+        with patch.dict(os.environ, {}, clear=True):
+            tree = workspace.parse_idea_xml_bytes(after)
+            config = tree.getroot().find("./component/configuration[@name='gateway']")
+            full = config.find("option[@name='VM_PARAMETERS']").get("value")
+            partial = shlex.join(a for a in runtime.idea_vm_arguments(full)
+                                 if not a.startswith("-Dspring.config.additional-location="))
+            for value, expected in (("", None), (partial, "IDE_REFERENCE_MISSING")):
+                tree = workspace.parse_idea_xml_bytes(after)
+                config = tree.getroot().find("./component/configuration[@name='gateway']")
+                config.find("option[@name='VM_PARAMETERS']").set("value", value)
+                path.write_bytes(workspace.idea_xml_bytes(tree))
+                if expected is None:
+                    runtime.check_idea_runtime("gateway", receipt, self.root)
+                    continue
+                with self.assertRaises(runtime.RuntimeValidationError) as error:
+                    runtime.check_idea_runtime("gateway", receipt, self.root)
+                self.assertEqual(error.exception.reason_code, expected)
+
     def test_idea_environment_scope_uses_project_names_and_retains_identity_protection(self):
         self.dev.write_text(self.dev.read_text() + "GITHUB_CUSTOM_SOURCE_URL=SYNTHETIC_PROJECT_PRIVATE_VALUE\n")
         receipt = runtime.prepare("rag", "1.2.3", **self.inputs, write=False)
