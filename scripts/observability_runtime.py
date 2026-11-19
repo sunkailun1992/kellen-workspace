@@ -501,8 +501,10 @@ def check_idea_runtime(service, receipt, root=ROOT):
             raise RuntimeValidationError("IDE_MODULE_MISMATCH")
         if receipt.get("local_nacos_yaml"):
             workdir = options.get("WORKING_DIRECTORY", "")
-            workdir = workdir.replace("$PROJECT_DIR$", str(root)).replace("$USER_HOME$", str(Path.home()))
-            if not workdir or not Path(workdir).is_absolute() or Path(workdir).resolve() != (root / service).resolve():
+            if not workdir:
+                raise RuntimeValidationError("IDE_PATH_INVALID")
+            # IDEA 原生 Spring Boot 配置把工作目录存成 file: URI；与其它受控引用同样规范化后再比较。
+            if canonical_idea_path(workdir, root, file_uri=workdir[:5].lower() == "file:") != (root / service).resolve():
                 raise RuntimeValidationError("IDE_PATH_INVALID")
             if options.get("ACTIVE_PROFILES", "") not in {"", "dev"}:
                 raise RuntimeValidationError("IDE_APPLICATION_ARGS_OVERRIDE")

@@ -425,6 +425,35 @@ class RuntimePreparationTests(unittest.TestCase):
                     runtime.check_idea_runtime("gateway", receipt, self.root)
                 self.assertEqual(error.exception.reason_code, expected)
 
+    def test_idea_local_nacos_yaml_accepts_ide_file_uri_working_directory(self):
+        """IDEA 原生 Spring Boot 配置把工作目录存成 file: URI，与其它受控引用一样规范化后比较。"""
+        path = self.create_idea_fixture()
+        repo = self.root / "gateway"
+        bootstrap = repo / "config/application-dev.yml"
+        bootstrap.parent.mkdir()
+        (repo / ".git/info/exclude").write_text("/config/application-dev.yml\n")
+        bootstrap.write_text("GITHUB_NACOS_DEV_SERVER_ADDR: yaml-fixture\n")
+        bootstrap.chmod(0o600)
+        _, _, after, _ = idea.candidate(self.root, self.inputs)
+        receipt = runtime.prepare("gateway", "1.2.3", **self.inputs, local_repo=repo)
+        with patch.dict(os.environ, {}, clear=True):
+            for value, expected in (("file://$PROJECT_DIR$/gateway", None),
+                                    ("file://$PROJECT_DIR$", "IDE_PATH_INVALID"),
+                                    ("file://$PROJECT_DIR$/user", "IDE_PATH_INVALID")):
+                tree = workspace.parse_idea_xml_bytes(after)
+                config = tree.getroot().find("./component/configuration[@name='gateway']")
+                option = config.find("option[@name='WORKING_DIRECTORY']")
+                if option is None:
+                    option = ET.SubElement(config, "option", {"name": "WORKING_DIRECTORY"})
+                option.set("value", value)
+                path.write_bytes(workspace.idea_xml_bytes(tree))
+                if expected is None:
+                    runtime.check_idea_runtime("gateway", receipt, self.root)
+                    continue
+                with self.assertRaises(runtime.RuntimeValidationError) as error:
+                    runtime.check_idea_runtime("gateway", receipt, self.root)
+                self.assertEqual(error.exception.reason_code, expected)
+
     def test_idea_environment_scope_uses_project_names_and_retains_identity_protection(self):
         self.dev.write_text(self.dev.read_text() + "GITHUB_CUSTOM_SOURCE_URL=SYNTHETIC_PROJECT_PRIVATE_VALUE\n")
         receipt = runtime.prepare("rag", "1.2.3", **self.inputs, write=False)
