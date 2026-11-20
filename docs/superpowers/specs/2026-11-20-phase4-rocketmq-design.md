@@ -22,6 +22,7 @@
 ## 修订记录
 
 - 2026-11-20 13:32（用户）：同意不用Spring Cloud Stream。核对后改用主流项目多数采用的rocketmq-spring（发送`RocketMQTemplate`、消费`@RocketMQMessageListener`）：只接RocketMQ一种队列，Stream换队列的好处用不上；SCA binder只有18个延时等级、没有消费端钩子，泳道与上下文都要绕路；把Stream放进utils主制品，会给所有服务带上Spring Integration与函数自动绑定。下文已按此改写，原Stream版本见Git历史`6b23281`。
+- 2026-11-20 20:04（用户）：上线后 NAS 交换区已用 4073MB，比上线前多 991MB，超过“增量不超过 500MB”。核对：可用内存 5129MB；RocketMQ 自身几乎不用交换（broker 37MiB），涨的是闲置服务被挤出的冷页（nacos 652MiB、conductor 376MiB 等）；vmstat 采样只有零星换入、没有换出。用户选择接受：这次读数记为新基线，以后按“可用内存不低于 3.5GB、持续采样没有换出”判断，不动任何容器。
 
 ## 目标与反目标
 
