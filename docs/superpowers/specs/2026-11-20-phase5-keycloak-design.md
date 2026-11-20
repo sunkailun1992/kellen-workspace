@@ -16,6 +16,7 @@
 ## 修订记录
 
 - 2026-11-20 21:5x：按用户新规则重查后改了三处先前的口头提议。①各服务不再“只用JWT解码器、不引入整套Spring Security”，改为各服务都是标准的Spring Security资源服务器；②服务间“代表用户调用”不再“转发用户令牌加客户端凭证”，改为RFC 8693令牌交换（OWASP身份传递速查表：接收方的策略要区分“哪个服务在调用、代表谁”时用令牌交换）；③Keycloak管理接口用官方`keycloak-admin-client`，不自己写HTTP调用。
+- 2026-11-20 22:4x（写计划时）：`github-gateway`不开刷新令牌轮换（RFC 9700对机密客户端以客户端认证约束刷新令牌，BFF并发刷新时轮换会让同一会话的其他请求失效）；新增`github-prometheus`客户端，Prometheus抓RAG引擎指标改用内置OAuth2客户端凭证；OTel Collector接收遥测的静态令牌保留（OTel Java探针只支持固定请求头）；RocketMQ的user、message口令改为只分发给各自服务（第4阶段遗留）。
 
 ## 目标与反目标
 
