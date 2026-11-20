@@ -78,6 +78,33 @@ class ServiceEnvironmentTests(unittest.TestCase):
             self.assertEqual('GITHUB_RAG_QWEN_API_KEY'in scoped,name=='rag')
             self.assertEqual('GITHUB_RAG_ENGINE_API_KEY'in scoped,name=='rag')
             for key in ['GITHUB_POSTGRESQL_AI_PASSWORD','GITHUB_AGENT_CLIENT_SECRET','GITHUB_CUSTOM_SOURCE_URL']:self.assertEqual(scoped[key],raw[key])
+    def test_keycloak_client_secrets_only_reach_their_service(self):
+        owners={'GITHUB_KEYCLOAK_GATEWAY_CLIENT_SECRET':'gateway','GITHUB_KEYCLOAK_AI_CLIENT_SECRET':'ai',
+                'GITHUB_KEYCLOAK_RAG_CLIENT_SECRET':'rag','GITHUB_KEYCLOAK_USER_ADMIN_CLIENT_SECRET':'user'}
+        raw={key:'synthetic-'+owner for key,owner in owners.items()}
+        for name in service.SERVICES:
+            scoped=service.github_environment(raw,name)
+            for key,owner in owners.items():self.assertEqual(key in scoped,name==owner,(key,name))
+    def test_rocketmq_credentials_only_reach_user_and_message(self):
+        raw={'GITHUB_ROCKETMQ_USER_ACCESS_KEY':'u-ak','GITHUB_ROCKETMQ_USER_SECRET_KEY':'u-sk',
+             'GITHUB_ROCKETMQ_MESSAGE_ACCESS_KEY':'m-ak','GITHUB_ROCKETMQ_MESSAGE_SECRET_KEY':'m-sk',
+             'GITHUB_ROCKETMQ_HOST':'synthetic-host','GITHUB_ROCKETMQ_PORT':'9876'}
+        for name in service.SERVICES:
+            scoped=service.github_environment(raw,name)
+            self.assertEqual('GITHUB_ROCKETMQ_USER_ACCESS_KEY' in scoped and 'GITHUB_ROCKETMQ_USER_SECRET_KEY' in scoped,name=='user')
+            self.assertEqual('GITHUB_ROCKETMQ_MESSAGE_ACCESS_KEY' in scoped and 'GITHUB_ROCKETMQ_MESSAGE_SECRET_KEY' in scoped,name=='message')
+            self.assertEqual(scoped['GITHUB_ROCKETMQ_HOST'],'synthetic-host');self.assertEqual(scoped['GITHUB_ROCKETMQ_PORT'],'9876')
+    def test_nacos_admin_credentials_reach_no_service(self):
+        raw={'GITHUB_NACOS_ADMIN_USERNAME':'synthetic-admin','GITHUB_NACOS_ADMIN_PASSWORD':'synthetic-admin-pass',
+             'GITHUB_NACOS_USERNAME':'synthetic-app','GITHUB_NACOS_PASSWORD':'synthetic-app-pass'}
+        for name in service.SERVICES:
+            scoped=service.github_environment(raw,name)
+            self.assertNotIn('GITHUB_NACOS_ADMIN_USERNAME',scoped);self.assertNotIn('GITHUB_NACOS_ADMIN_PASSWORD',scoped)
+            self.assertEqual(scoped['GITHUB_NACOS_USERNAME'],'synthetic-app');self.assertEqual(scoped['GITHUB_NACOS_PASSWORD'],'synthetic-app-pass')
+    def test_keycloak_issuer_reaches_all_services(self):
+        for name in service.SERVICES:
+            self.assertEqual(service.github_environment({'GITHUB_KEYCLOAK_ISSUER_URI':'https://synthetic/realms/github-dev'},name),
+                             {'GITHUB_KEYCLOAK_ISSUER_URI':'https://synthetic/realms/github-dev'})
     def test_process_environment_uses_real_child_environment_without_secret_arguments(self):
         source={'PATH':os.defpath,'AI_STORAGE_KEK_B64':'inherited-old','AI_MODELCONTROLPLANE_APIKEY':'inherited-old',
                 'GITHUB_MINIO_SECRET_KEY':'inherited-storage','BUSINESS_OPTION':'keep'}

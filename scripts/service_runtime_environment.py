@@ -25,6 +25,13 @@ MODEL_SCOPES=(('githubgoogle',frozenset({'ai-agent'})),('githubdeepseek',frozens
               ('githubragengine',frozenset({'rag'})),('githubopenai',frozenset()),
               ('githubanthropic',frozenset()),('githubgemini',frozenset()),('githublitellm',frozenset()),
               ('githubmodel',frozenset()))
+# 服务专属凭据（2026-11-20 第5阶段）：Keycloak 客户端密钥只给各自的服务；RocketMQ 账号只给收发它的服务；
+# Nacos 管理员账号只给运维脚本，不进任何服务环境。前缀含 client，避免以后同名开头的变量被误归属。
+CREDENTIAL_SCOPES=(('githubkeycloakgatewayclient',frozenset({'gateway'})),('githubkeycloakaiclient',frozenset({'ai'})),
+                   ('githubkeycloakragclient',frozenset({'rag'})),('githubkeycloakuseradminclient',frozenset({'user'})),
+                   ('githubrocketmquser',frozenset({'user'})),('githubrocketmqmessage',frozenset({'message'})),
+                   ('githubnacosadmin',frozenset()))
+SCOPES=MODEL_SCOPES+CREDENTIAL_SCOPES
 REASON_CODES=frozenset({'SERVICE_ENV_ABSOLUTE_PATH_REQUIRED','SERVICE_ENV_SYMLINK_REFUSED','SERVICE_ENV_OPEN_FAILED',
     'SERVICE_ENV_OWNERSHIP_MODE_INVALID','SERVICE_ENV_TOO_LARGE','SERVICE_ENV_JSON_INVALID','SERVICE_ENV_DUPLICATE_KEY',
     'SERVICE_ENV_FIELDS_INVALID','SERVICE_ENV_VALUES_INVALID','SERVICE_ENV_ENCODING_INVALID','SERVICE_ENV_CHANGED',
@@ -39,7 +46,7 @@ def normalized(name):return re.sub(r'[^a-z0-9]','',name.lower())
 
 def sensitive_github_name(name):
     key=normalized(name)
-    return key.startswith(STORAGE_PREFIXES)or key in STORAGE_NAMES or (key.startswith('github')and key.endswith('apikey'))or any(key.startswith(prefix)for prefix,_ in MODEL_SCOPES)
+    return key.startswith(STORAGE_PREFIXES)or key in STORAGE_NAMES or (key.startswith('github')and key.endswith('apikey'))or any(key.startswith(prefix)for prefix,_ in SCOPES)
 
 def controlled_service_name(name):
     return normalized(name).startswith(('aistorage','aimodelcontrolplane'))or sensitive_github_name(name)
@@ -51,7 +58,7 @@ def github_environment(values,service):
         if not key.startswith('GITHUB_'):continue
         name=normalized(key)
         if name.startswith(STORAGE_PREFIXES)or name in STORAGE_NAMES:continue
-        scope=next((allowed for prefix,allowed in MODEL_SCOPES if name.startswith(prefix)),None)
+        scope=next((allowed for prefix,allowed in SCOPES if name.startswith(prefix)),None)
         if scope is None and name.endswith('apikey'):continue  # 未声明消费者的 API key 不向所有服务广播。
         if scope is None or service in scope:result[key]=value
     return result

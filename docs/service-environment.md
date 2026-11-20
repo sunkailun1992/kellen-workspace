@@ -10,6 +10,8 @@
 - `AI_MODELCONTROLPLANE_VERIFICATIONFILE` 可为 AI 指定本机脱敏验收文件的绝对路径。页面将历史结果和时间关联到同一模型部署，文件应通过实际验收生成。
 - 环境文件可以提供当前消费方的真实 provider key 或 LiteLLM 应用 key；入口不执行模型调用、不自动更改 Nacos、不推定业务已切换到 LiteLLM。
 
+- 服务专属凭据（2026-11-20 第5阶段）：`GITHUB_KEYCLOAK_GATEWAY_CLIENT_SECRET` 只给 gateway，`GITHUB_KEYCLOAK_AI_CLIENT_SECRET` 只给 ai，`GITHUB_KEYCLOAK_RAG_CLIENT_SECRET` 只给 rag，`GITHUB_KEYCLOAK_USER_ADMIN_CLIENT_SECRET` 只给 user；`GITHUB_ROCKETMQ_USER_*` 只给 user，`GITHUB_ROCKETMQ_MESSAGE_*` 只给 message；`GITHUB_NACOS_ADMIN_*` 只给运维脚本、不进任何服务。`GITHUB_KEYCLOAK_ISSUER_URI`、`GITHUB_ROCKETMQ_HOST/PORT` 与服务用的 `GITHUB_NACOS_USERNAME/PASSWORD` 照常分发给全部服务。
+
 代码策略在 `scripts/service_runtime_environment.py`。名称区别于本机临时运维 helper，避免动态导入时与其它同名 `service_environment` 模块冲突。
 
 ## 每服务私有 JSON
