@@ -69,15 +69,20 @@ class ServiceEnvironmentTests(unittest.TestCase):
     def test_scope_filters_storage_and_models_without_changing_database_or_business_values(self):
         raw={'GITHUB_OPENROUTER_API_KEY':'unassigned-model','GITHUB_MINIO_SECRET_KEY':'storage','GITHUB_OSS_ACCESS_KEY_SECRET':'storage','GITHUB_GOOGLE_API_KEY':'google',
              'GITHUB_QWEN_API_KEY':'qwen','GITHUB_DEEPSEEK_API_KEY':'deepseek','GITHUB_RAG_QWEN_API_KEY':'embedding',
-             'GITHUB_RAG_ENGINE_API_KEY':'engine','GITHUB_POSTGRESQL_AI_PASSWORD':'database','GITHUB_AGENT_CLIENT_SECRET':'hmac',
+             'GITHUB_RAG_ENGINE_URL':'engine','GITHUB_POSTGRESQL_AI_PASSWORD':'database',
              'GITHUB_CUSTOM_SOURCE_URL':'business'}
         for name in service.SERVICES:
             scoped=service.github_environment(raw,name)
             self.assertNotIn('GITHUB_OPENROUTER_API_KEY',scoped);self.assertNotIn('GITHUB_MINIO_SECRET_KEY',scoped);self.assertNotIn('GITHUB_OSS_ACCESS_KEY_SECRET',scoped)
             self.assertEqual('GITHUB_GOOGLE_API_KEY'in scoped,name=='ai-agent')
             self.assertEqual('GITHUB_RAG_QWEN_API_KEY'in scoped,name=='rag')
-            self.assertEqual('GITHUB_RAG_ENGINE_API_KEY'in scoped,name=='rag')
-            for key in ['GITHUB_POSTGRESQL_AI_PASSWORD','GITHUB_AGENT_CLIENT_SECRET','GITHUB_CUSTOM_SOURCE_URL']:self.assertEqual(scoped[key],raw[key])
+            self.assertEqual('GITHUB_RAG_ENGINE_URL'in scoped,name=='rag')
+            for key in ['GITHUB_POSTGRESQL_AI_PASSWORD','GITHUB_CUSTOM_SOURCE_URL']:self.assertEqual(scoped[key],raw[key])
+    def test_retired_rag_engine_shared_key_is_not_an_accepted_rag_key(self):
+        # 第5阶段 rag 调引擎改用 Keycloak 客户端凭证，共享密钥退役；rag 的覆盖键只剩引擎地址。
+        with self.assertRaises(service.EnvironmentError):
+            service.process_environment({},'rag',{'GITHUB_RAG_ENGINE_API_KEY':'retired'})
+        self.assertEqual(service.process_environment({},'rag',{'GITHUB_RAG_ENGINE_URL':'http://engine.test'})['GITHUB_RAG_ENGINE_URL'],'http://engine.test')
     def test_keycloak_client_secrets_only_reach_their_service(self):
         owners={'GITHUB_KEYCLOAK_GATEWAY_CLIENT_SECRET':'gateway','GITHUB_KEYCLOAK_AI_CLIENT_SECRET':'ai',
                 'GITHUB_KEYCLOAK_RAG_CLIENT_SECRET':'rag','GITHUB_KEYCLOAK_USER_ADMIN_CLIENT_SECRET':'user'}

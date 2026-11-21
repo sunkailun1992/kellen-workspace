@@ -35,7 +35,7 @@ AI 文件示意（仅键与占位符；真实值不能粘进对话或 Git）：
 
 字段按实际部署需要提供；空 DB/缺 KEK 的 AI 行为仍由服务的 typed unconfigured 合同决定。不要把样例占位符当成有效配置。
 
-ai-agent 可选键为公开模板的 `GITHUB_GOOGLE_API_KEY` / `GITHUB_GOOGLE_BASE_URL` / `GITHUB_GOOGLE_CHAT_MODEL`、DeepSeek 的 API_KEY/BASE_URL/MODEL、Qwen 的 API_KEY/BASE_URL/CHAT_MODEL。rag 可选 `GITHUB_RAG_QWEN_API_KEY` / `GITHUB_RAG_QWEN_BASE_URL` / `GITHUB_RAG_ENGINE_API_KEY` / `GITHUB_RAG_ENGINE_URL`。其余六个服务本批没有额外 OS 键，不接受 AI 的文件。
+ai-agent 可选键为公开模板的 `GITHUB_GOOGLE_API_KEY` / `GITHUB_GOOGLE_BASE_URL` / `GITHUB_GOOGLE_CHAT_MODEL`、DeepSeek 的 API_KEY/BASE_URL/MODEL、Qwen 的 API_KEY/BASE_URL/CHAT_MODEL。rag 可选 `GITHUB_RAG_QWEN_API_KEY` / `GITHUB_RAG_QWEN_BASE_URL` / `GITHUB_RAG_ENGINE_URL`（引擎的共享密钥 `GITHUB_RAG_ENGINE_API_KEY` 第5阶段退役，rag 改用 Keycloak 客户端凭证）。其余六个服务本批没有额外 OS 键，不接受 AI 的文件。
 
 文件同时用于 CLI 与原生 IDE，值须能被 JetBrains 原生 parser 无损表示：拒绝开头空白、美元符号、双引号和控制字符，不裁剪或改写秘密。支持的 `#`、单引号、反斜线和 Unicode 以受管双引号格式写入 `.env`；不使用 `shlex.quote`，不执行变量展开。若实际凭据超出该格式，停止并调整受支持的输入方案，不能静默转义成另一个值。
 

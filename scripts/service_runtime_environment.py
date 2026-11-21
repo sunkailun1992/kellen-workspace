@@ -17,7 +17,7 @@ SERVICE_KEYS.update(ai=AI_KEYS,**{
     'ai-agent':frozenset({'GITHUB_GOOGLE_API_KEY','GITHUB_GOOGLE_CHAT_MODEL','GITHUB_GOOGLE_BASE_URL',
                          'GITHUB_DEEPSEEK_API_KEY','GITHUB_DEEPSEEK_BASE_URL','GITHUB_DEEPSEEK_MODEL',
                          'GITHUB_QWEN_API_KEY','GITHUB_QWEN_BASE_URL','GITHUB_QWEN_CHAT_MODEL'}),
-    'rag':frozenset({'GITHUB_RAG_QWEN_API_KEY','GITHUB_RAG_QWEN_BASE_URL','GITHUB_RAG_ENGINE_API_KEY','GITHUB_RAG_ENGINE_URL'})})
+    'rag':frozenset({'GITHUB_RAG_QWEN_API_KEY','GITHUB_RAG_QWEN_BASE_URL','GITHUB_RAG_ENGINE_URL'})})
 STORAGE_PREFIXES=('githubminio','githuboss','githubcos','githubs3','githubstorage','githubaliyunoss')
 STORAGE_NAMES=frozenset({'githubaliyunaccesskey','githubaliyunaccesskeyid','githubaliyunaccesskeysecret'})
 MODEL_SCOPES=(('githubgoogle',frozenset({'ai-agent'})),('githubdeepseek',frozenset({'ai-agent'})),
