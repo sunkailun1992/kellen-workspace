@@ -18,6 +18,7 @@
 ## 修订记录
 
 - 2026-11-22 初稿（b11e1a4）；用户01:30批准。
+- 2026-11-22 写计划时核对：admin-web 的 `.umirc.ts` 已开 `utoopack: {}`（官方模板同样），“构建工具”两处措辞改为保持现有的 utoopack，做法不变。
 
 ## 目标与反目标
 
@@ -34,7 +35,7 @@
 - 为了通过检查去压警告或规则：关严格模式、加 eslint-disable、用 overrides 把 v3 强塞给需要 v2 的依赖、放宽测试断言。
 - 页面结构、交互和接口语义被顺手改动；除 `sort` 改名外改后端接口。
 - 改名漏掉任何一张表、一个接口字段或一处排序，导致排序静默失效。
-- 拆微前端、换构建工具（utoopack、mako）或换掉 Umi。
+- 拆微前端、换掉现有的构建工具 utoopack，或换掉 Umi。
 
 ## 判定口径
 
@@ -202,7 +203,7 @@ TypeScript 7 等 typescript-eslint 的 peer 范围包含 7.x 时再升（列入�
 
 ## 不在本阶段
 
-- 拆微前端（qiankun）；换构建工具（utoopack、mako）；Keycloak 登录页主题；国际化；视觉改版；Spring Boot 4.1 那一轮。
+- 拆微前端（qiankun）；换构建工具（保持现有的 utoopack）；Keycloak 登录页主题；国际化；视觉改版；Spring Boot 4.1 那一轮。
 - TypeScript 7：等 typescript-eslint 支持 7.x 再升。
 - Testing Library：现有组件测试用服务端渲染后断言，真实交互由浏览器测试覆盖，本阶段不引入。
 - commitlint：10个项目里恰好一半在用，不算多数；提交说明沿用现有中文约定。
