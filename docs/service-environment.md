@@ -96,6 +96,8 @@ IntelliJ IDEA 官方支持 Application/Spring Boot 的原生 env 文件，无需
 
 Nacos 里的 `${GITHUB_KEYCLOAK_*}` 与应用 yml 里的 `${GITHUB_NACOS_USERNAME}` 等占位符在三种入口里按同一个名字解析，本机文件只是给这些名字赋值，不引入只有本机才认的配置键。任何入口缺了值都应在启动时报占位符无法解析；`application-*.yml` 里 `${GITHUB_NACOS_USERNAME:nacos}` 这类默认值会让缺值静默回落到默认账号，第5阶段任务 23 删除。
 
+Keycloak 的 HTTPS 证书由 mkcert 本地 CA 签发：网关启动时就要取发现文档，资源服务器首个请求取公钥，运行服务的 JDK 必须信任这个根证书。本机 Zulu 21 已由 `mkcert -install` 写入；Jar 换到别的机器或以后做镜像时，要把同一个根证书导入那里的 JDK 信任库（镜像里在构建时导入），或改用正式 CA 证书。它不是配置键，同样跟着部署环境走。
+
 ## 公开依据与验证边界
 
 - [The Twelve-Factor App：配置](https://12factor.net/config)、[OWASP Secrets Management Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html)：密钥与随部署变化的地址由环境注入，单一私有来源，不进配置中心明文与 Git。
