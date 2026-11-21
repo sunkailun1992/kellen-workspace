@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+  # 各业务仓库推送不会触发本工作流；每天按各仓库最新 main 跑一遍组合检查（UTC 20:00，即新加坡时间 04:00）。
+  schedule:
+    - cron: '0 20 * * *'
 
 permissions:
   contents: read
@@ -48,5 +51,9 @@ jobs:
         run: ./scripts/bootstrap.sh
       - name: Check independent repository status
         run: ./scripts/status.sh
+      - name: Check GitHub environment configuration offline
+        # 只读、不连远端：环境隔离、配置覆盖、Nacos 账号不留默认值、资源服务器受众、路由与前端路径、Flyway 业务表。
+        # 要读全部 12 个仓库（同级目录），所以放在组合检查里；YAML 由运行器自带的 Ruby 解析。
+        run: python3 utils/ops/github-dev/scripts/verify_configuration.py
       - name: Verify workspace and compile all Java sources
         run: ./gradlew --no-daemon verifyWorkspace compileAllJava

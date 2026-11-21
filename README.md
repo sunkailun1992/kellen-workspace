@@ -238,7 +238,7 @@ bash -n scripts/bootstrap.sh scripts/update.sh scripts/status.sh scripts/idea.sh
 WORKSPACE_GRADLE_TESTS=1 python3 -m unittest discover -s tests -p test_composite.py -v
 ```
 
-GitHub Actions在`main`、`test`、`preprod`推送及面向`main`的PR上运行，也支持手动触发。CI分别运行脚本测试，以及Gradle临时fixture、真实公开清单下载、JDK 17下的`verifyWorkspace`和`compileAllJava`。
+GitHub Actions在`main`、`test`、`preprod`推送及面向`main`的PR上运行，也支持手动触发，并每天按各仓库最新`main`定时跑一次（UTC 20:00，新加坡时间04:00；各业务仓库推送不会触发本工作流）。CI分别运行脚本测试，以及Gradle临时fixture、真实公开清单下载、离线配置检查（`utils/ops/github-dev/scripts/verify_configuration.py`：环境隔离、配置覆盖、Nacos账号不留默认值、受众、路由与前端路径、Flyway业务表，只读不连远端）、JDK 21下的`verifyWorkspace`和`compileAllJava`。
 
 根`compileAllJava`默认只编译Java源码，不运行子仓业务测试、不启动服务、不发布远端制品。编译通过不能代表子仓业务测试通过。IDEA实际导入、业务测试、部署和运行态验收需要分别确认，并以对应仓库本轮实际检查结果为准。
 
