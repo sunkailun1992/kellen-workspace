@@ -105,6 +105,23 @@ class ServiceEnvironmentTests(unittest.TestCase):
         for name in service.SERVICES:
             self.assertEqual(service.github_environment({'GITHUB_KEYCLOAK_ISSUER_URI':'https://synthetic/realms/github-dev'},name),
                              {'GITHUB_KEYCLOAK_ISSUER_URI':'https://synthetic/realms/github-dev'})
+    def test_runtime_environment_holds_only_values_nacos_leaves_to_the_process_environment(self):
+        # Nacos 里只放占位符的 Keycloak 值和登录 Nacos 用的服务账号，只能由进程环境提供；已渲染进 Nacos 的数据库、RocketMQ 等不在此列。
+        raw={'GITHUB_KEYCLOAK_ISSUER_URI':'https://synthetic/realms/github-dev',
+             'GITHUB_KEYCLOAK_GATEWAY_CLIENT_SECRET':'gw','GITHUB_KEYCLOAK_AI_CLIENT_SECRET':'ai',
+             'GITHUB_KEYCLOAK_RAG_CLIENT_SECRET':'rag','GITHUB_KEYCLOAK_USER_ADMIN_CLIENT_SECRET':'ua',
+             'GITHUB_KEYCLOAK_UNDECLARED_CLIENT_SECRET':'undeclared',
+             'GITHUB_NACOS_USERNAME':'synthetic-app','GITHUB_NACOS_PASSWORD':'synthetic-app-pass',
+             'GITHUB_NACOS_ADMIN_USERNAME':'synthetic-admin','GITHUB_NACOS_ADMIN_PASSWORD':'synthetic-admin-pass',
+             'GITHUB_POSTGRESQL_USER_PASSWORD':'rendered','GITHUB_ROCKETMQ_USER_SECRET_KEY':'rendered',
+             'GITHUB_ACTUATOR_TOKEN':'properties-only'}
+        common={'GITHUB_KEYCLOAK_ISSUER_URI','GITHUB_NACOS_USERNAME','GITHUB_NACOS_PASSWORD'}
+        own={'gateway':'GITHUB_KEYCLOAK_GATEWAY_CLIENT_SECRET','ai':'GITHUB_KEYCLOAK_AI_CLIENT_SECRET',
+             'rag':'GITHUB_KEYCLOAK_RAG_CLIENT_SECRET','user':'GITHUB_KEYCLOAK_USER_ADMIN_CLIENT_SECRET'}
+        for name in sorted(service.SERVICES):
+            values=service.runtime_environment(raw,name)
+            self.assertEqual(set(values),common|({own[name]}if name in own else set()),name)
+            self.assertEqual(values,{key:raw[key]for key in values})
     def test_process_environment_uses_real_child_environment_without_secret_arguments(self):
         source={'PATH':os.defpath,'AI_STORAGE_KEK_B64':'inherited-old','AI_MODELCONTROLPLANE_APIKEY':'inherited-old',
                 'GITHUB_MINIO_SECRET_KEY':'inherited-storage','BUSINESS_OPTION':'keep'}

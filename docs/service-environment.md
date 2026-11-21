@@ -11,6 +11,7 @@
 - 环境文件可以提供当前消费方的真实 provider key 或 LiteLLM 应用 key；入口不执行模型调用、不自动更改 Nacos、不推定业务已切换到 LiteLLM。
 
 - 服务专属凭据（2026-11-20 第5阶段）：`GITHUB_KEYCLOAK_GATEWAY_CLIENT_SECRET` 只给 gateway，`GITHUB_KEYCLOAK_AI_CLIENT_SECRET` 只给 ai，`GITHUB_KEYCLOAK_RAG_CLIENT_SECRET` 只给 rag，`GITHUB_KEYCLOAK_USER_ADMIN_CLIENT_SECRET` 只给 user；`GITHUB_ROCKETMQ_USER_*` 只给 user，`GITHUB_ROCKETMQ_MESSAGE_*` 只给 message；`GITHUB_NACOS_ADMIN_*` 只给运维脚本、不进任何服务。`GITHUB_KEYCLOAK_ISSUER_URI`、`GITHUB_ROCKETMQ_HOST/PORT` 与服务用的 `GITHUB_NACOS_USERNAME/PASSWORD` 照常分发给全部服务。
+- 运行时环境键（2026-11-21 第5阶段）：Nacos 里只放占位符的 `GITHUB_KEYCLOAK_ISSUER_URI` 与四个 Keycloak 客户端密钥，以及登录 Nacos 用的 `GITHUB_NACOS_USERNAME/PASSWORD`，只能由服务进程环境提供。Jar/CLI 经受管 application.properties 拿到；IDEA 原生入口不挂 JVM 参数、不加载该文件，改由每服务原生 env 文件提供，范围与 application.properties 相同（客户端密钥只给各自服务，没有声明消费者的 Keycloak 键不进任何 env 文件）。源码目录的私有引导 `config/application-dev.yml` 只放 Nacos 地址、命名空间与分组，不放口令；服务账号口令只有 dev.env 一处。
 
 代码策略在 `scripts/service_runtime_environment.py`。名称区别于本机临时运维 helper，避免动态导入时与其它同名 `service_environment` 模块冲突。
 
@@ -75,7 +76,7 @@ IntelliJ IDEA 官方支持 Application/Spring Boot 的原生 env 文件，无需
 </option>
 ```
 
-这是 XCollection v1 形状，不是 list wrapper。每服务生成独立 0600 `.env`，未配置额外 OS 值的服务生成空文件。XML 中不出现环境值；不会写入 `.sh`/`.bat` 等可执行 env 脚本。
+这是 XCollection v1 形状，不是 list wrapper。每服务生成独立 0600 `.env`：本服务私有 JSON 的键，加上 dev.env 中本服务的运行时环境键（见上）。XML 中不出现环境值；不会写入 `.sh`/`.bat` 等可执行 env 脚本。
 
 沿用 `configure-idea-observed.py --dry-run` 生成完整候选，再用当前 workspace/tools SHA 做 CAS。可通过重复 `--service-env service=/absolute/file.json` 提供本次 map；实际路径、IDE XML 和绑定不在本次源码任务中应用。既有 envFilePaths 若指向未知用户文件、脚本或多文件组合，会保留原文件并拒绝迁移，不读取或接管这些文件。等价受管路径的 IDEA 宏形式保留。
 
@@ -85,7 +86,20 @@ IntelliJ IDEA 官方支持 Application/Spring Boot 的原生 env 文件，无需
 
 每次 Before launch 准备后校验 envFilePaths、受管内容摘要、owner/mode/link 身份，拒绝显式 env/VM/业务参数覆盖。脚本成功写入不代表 IDE 已重载，更不代表真实 Run/Debug 已验证。IDE 打开时应保存/关闭工作区，再按最新 SHA 规划与应用，重开后独立核对。
 
+## 三种启动入口用同一组变量名
+
+| 入口 | 运行时环境键从哪里来 |
+|---|---|
+| IDEA 原生 Run/Debug | 每服务原生 env 文件，Before launch 每次从 dev.env 重新生成 |
+| `run-observed.py` / `run-observed-jar.py` | 受管 application.properties（`-Dspring.config.additional-location`）；私有 JSON 的键进目标 OS 环境 |
+| 容器镜像（目前九个服务都没有镜像，以后加时） | 同名 OS 环境变量（compose `env_file` / `secrets`、Kubernetes Secret），不新增镜像专用的配置名 |
+
+Nacos 里的 `${GITHUB_KEYCLOAK_*}` 与应用 yml 里的 `${GITHUB_NACOS_USERNAME}` 等占位符在三种入口里按同一个名字解析，本机文件只是给这些名字赋值，不引入只有本机才认的配置键。任何入口缺了值都应在启动时报占位符无法解析；`application-*.yml` 里 `${GITHUB_NACOS_USERNAME:nacos}` 这类默认值会让缺值静默回落到默认账号，第5阶段任务 23 删除。
+
 ## 公开依据与验证边界
+
+- [The Twelve-Factor App：配置](https://12factor.net/config)、[OWASP Secrets Management Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html)：密钥与随部署变化的地址由环境注入，单一私有来源，不进配置中心明文与 Git。
+- [Spring Boot 外部化配置](https://docs.spring.io/spring-boot/reference/features/external-config.html)：OS 环境变量优先于 jar 内外的 application 配置文件，占位符从全部属性源解析；[Docker Compose 环境变量](https://docs.docker.com/compose/how-tos/environment-variables/set-environment-variables/)：容器入口的同名注入方式。
 
 - [JetBrains 官方环境变量说明](https://www.jetbrains.com/help/idea/program-arguments-and-environment-variables.html)：原生 env 文件入口。
 - [固定公开源码的 JVM options](https://github.com/JetBrains/intellij-community/blob/668585bc697eb098ac6472f436d924665dabe206/java/execution/impl/src/com/intellij/execution/application/JvmMainMethodRunConfigurationOptions.kt)、[XCollection 序列化](https://github.com/JetBrains/intellij-community/blob/668585bc697eb098ac6472f436d924665dabe206/platform/util/src/com/intellij/util/xmlb/annotations/XCollection.java)：精确 XML 形状。

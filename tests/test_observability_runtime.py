@@ -98,6 +98,53 @@ class RuntimePreparationTests(unittest.TestCase):
         for key in runtime.LOCAL_NACOS_CONNECTION_KEYS:
             self.assertIn(key + "=legacy-fixture", app)
 
+    def local_bootstrap_repo(self, name):
+        repo = self.root / name
+        subprocess.run(["git", "init", "--quiet", str(repo)], check=True)
+        bootstrap = repo / "config/application-dev.yml"
+        bootstrap.parent.mkdir()
+        (repo / ".git/info/exclude").write_text("/config/application-dev.yml\n")
+        bootstrap.write_text("GITHUB_NACOS_DEV_SERVER_ADDR: yaml-fixture\n")
+        bootstrap.chmod(0o600)
+        return repo
+
+    def test_local_yaml_owns_only_nacos_address_and_service_account_comes_from_dev_env(self):
+        # Nacos 开鉴权后服务账号口令只有 dev.env 一个私有来源；本地引导 yml 只决定地址与分组，不再各存一份口令。
+        self.assertEqual(runtime.LOCAL_NACOS_CONNECTION_KEYS,
+                         frozenset({"GITHUB_NACOS_SERVER_ADDR", "GITHUB_NACOS_DEV_SERVER_ADDR", "GITHUB_NACOS_GROUP"}))
+        with self.dev.open("a") as inputs:
+            inputs.write("GITHUB_NACOS_SERVER_ADDR=legacy-fixture\n"
+                         "GITHUB_NACOS_USERNAME=synthetic-app\nGITHUB_NACOS_PASSWORD=SYNTHETIC_APP_PASS\n")
+        observed = runtime.prepare("gateway", "1.1.0", **self.inputs, local_repo=self.local_bootstrap_repo("gateway"))
+        self.assertTrue(observed["local_nacos_yaml"])
+        app = Path(observed["app_config"]).read_text()
+        self.assertNotIn("GITHUB_NACOS_SERVER_ADDR=", app)
+        self.assertIn("GITHUB_NACOS_USERNAME=synthetic-app\n", app)
+        self.assertIn("GITHUB_NACOS_PASSWORD=SYNTHETIC_APP_PASS\n", app)
+
+    def test_native_env_file_carries_service_scoped_runtime_values_without_jvm_arguments(self):
+        # IDEA 原生入口不挂 JVM 参数、不加载 application.properties：Nacos 只放占位的 Keycloak 值与 Nacos 服务账号
+        # 只能经原生 env 文件进入服务进程环境；范围与 application.properties 相同，其余 GITHUB_* 照旧只进 properties。
+        with self.dev.open("a") as inputs:
+            inputs.write("GITHUB_KEYCLOAK_ISSUER_URI=https://keycloak.invalid/realms/github-dev\n"
+                         "GITHUB_KEYCLOAK_GATEWAY_CLIENT_SECRET=SYNTHETIC_GATEWAY_SECRET\n"
+                         "GITHUB_KEYCLOAK_USER_ADMIN_CLIENT_SECRET=SYNTHETIC_USER_ADMIN_SECRET\n"
+                         "GITHUB_NACOS_USERNAME=synthetic-app\nGITHUB_NACOS_PASSWORD=SYNTHETIC_APP_PASS\n"
+                         "GITHUB_NACOS_ADMIN_PASSWORD=SYNTHETIC_ADMIN_PASS\n")
+        gateway = runtime.prepare("gateway", "1.1.0", **self.inputs, local_repo=self.local_bootstrap_repo("gateway"))
+        native = Path(gateway["service_env_config"]).read_text()
+        self.assertEqual(native, 'GITHUB_KEYCLOAK_GATEWAY_CLIENT_SECRET="SYNTHETIC_GATEWAY_SECRET"\n'
+                                 'GITHUB_KEYCLOAK_ISSUER_URI="https://keycloak.invalid/realms/github-dev"\n'
+                                 'GITHUB_NACOS_PASSWORD="SYNTHETIC_APP_PASS"\n'
+                                 'GITHUB_NACOS_USERNAME="synthetic-app"\n')
+        self.assertEqual(Path(gateway["service_env_config"]).stat().st_mode & 0o777, 0o600)
+        self.assertEqual(gateway["service_env_sha256"], hashlib.sha256(native.encode("utf-8")).hexdigest())
+        self.assertNotIn("SYNTHETIC_", json.dumps(gateway))
+        report = Path(runtime.prepare("report", "1.1.0", **self.inputs)["service_env_config"]).read_text()
+        self.assertEqual(report, 'GITHUB_KEYCLOAK_ISSUER_URI="https://keycloak.invalid/realms/github-dev"\n'
+                                 'GITHUB_NACOS_PASSWORD="SYNTHETIC_APP_PASS"\n'
+                                 'GITHUB_NACOS_USERNAME="synthetic-app"\n')
+
     def test_dry_prepare_validates_without_writing(self):
         result = runtime.prepare("rag", "1.1.6", **self.inputs, write=False)
         self.assertFalse(self.inputs["state_dir"].exists())

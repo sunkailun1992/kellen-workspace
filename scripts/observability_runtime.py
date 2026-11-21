@@ -47,9 +47,10 @@ IDE_IDENTITY_ENV_NAMES = frozenset({"GITHUB_ACTUATOR_TOKEN", "GITHUB_NACOS_DEV_S
                                    "GITHUB_NACOS_DEV_USERNAME", "GITHUB_NACOS_DEV_PASSWORD",
                                    "GITHUB_NACOS_DEV_NAMESPACE", "GITHUB_NACOS_DEV_GROUP",
                                    "GITHUB_NACOS_DEV_ACCESS_TOKEN"})
+# 源码工作目录的私有引导 yml 只决定 Nacos 地址与分组这类非机密连接信息。第5阶段 Nacos 开鉴权后，服务账号口令
+# 只有 dev.env 一个私有来源，照常进 application.properties（CLI）与原生 env 文件（IDEA），不在各仓库引导 yml 各存一份。
 LOCAL_NACOS_CONNECTION_KEYS = frozenset({
-    "GITHUB_NACOS_SERVER_ADDR", "GITHUB_NACOS_DEV_SERVER_ADDR",
-    "GITHUB_NACOS_GROUP", "GITHUB_NACOS_USERNAME", "GITHUB_NACOS_PASSWORD",
+    "GITHUB_NACOS_SERVER_ADDR", "GITHUB_NACOS_DEV_SERVER_ADDR", "GITHUB_NACOS_GROUP",
 })
 REASON_CODES = frozenset({"LAUNCH_BINDING_MISSING", "LAUNCH_BINDING_INVALID", "RUNTIME_PREFLIGHT_FAILED",
                           "IDE_PATH_MACRO_UNSUPPORTED", "IDE_PATH_INVALID", "IDE_FILE_URI_INVALID",
@@ -374,7 +375,8 @@ def prepare(service, version, runtime_env, dev_env, state_dir, write=True, servi
         raise ValueError("service or version invalid")
     environment, agent, privacy = runtime_inputs(runtime_env, dev_env)
     overrides,env_metadata=service_env.select_environment(service,service_envs,service_env_file)
-    native_contents=service_env.native_env_contents(overrides)
+    # 原生 env 文件是 IDEA 入口唯一的进程环境来源：本服务私有 JSON 的键，加上 dev.env 中只能由进程环境提供的运行时键。
+    native_contents=service_env.native_env_contents({**service_env.runtime_environment(environment,service),**overrides})
     # Server Jar 没有服务源码工作目录，继续使用独立的私有 env。
     bootstrap = validate_dev_bootstrap(local_repo, required=False) if local_repo is not None else []
     local_nacos_yaml = bool(bootstrap) and all(path.suffix in {".yml", ".yaml"} for path in bootstrap)

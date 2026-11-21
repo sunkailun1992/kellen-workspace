@@ -32,6 +32,11 @@ CREDENTIAL_SCOPES=(('githubkeycloakgatewayclient',frozenset({'gateway'})),('gith
                    ('githubrocketmquser',frozenset({'user'})),('githubrocketmqmessage',frozenset({'message'})),
                    ('githubnacosadmin',frozenset()))
 SCOPES=MODEL_SCOPES+CREDENTIAL_SCOPES
+# 运行时环境键（2026-11-21 第5阶段）：发布到 Nacos 时只留占位符（utils render_nacos 原样保留 GITHUB_KEYCLOAK_*），
+# 或者根本不能放进 Nacos（登录 Nacos 自己用的服务账号）的值，只能由服务进程环境提供。IDEA 原生入口不挂 JVM 参数、
+# 不加载 application.properties，这些值要写进原生 env 文件；Jar/CLI 照旧经 application.properties，容器按同名环境变量注入。
+RUNTIME_NAMES=frozenset({'GITHUB_KEYCLOAK_ISSUER_URI','GITHUB_NACOS_USERNAME','GITHUB_NACOS_PASSWORD'})
+RUNTIME_SCOPED_PREFIXES=tuple(prefix for prefix,_ in CREDENTIAL_SCOPES if prefix.startswith('githubkeycloak'))
 REASON_CODES=frozenset({'SERVICE_ENV_ABSOLUTE_PATH_REQUIRED','SERVICE_ENV_SYMLINK_REFUSED','SERVICE_ENV_OPEN_FAILED',
     'SERVICE_ENV_OWNERSHIP_MODE_INVALID','SERVICE_ENV_TOO_LARGE','SERVICE_ENV_JSON_INVALID','SERVICE_ENV_DUPLICATE_KEY',
     'SERVICE_ENV_FIELDS_INVALID','SERVICE_ENV_VALUES_INVALID','SERVICE_ENV_ENCODING_INVALID','SERVICE_ENV_CHANGED',
@@ -62,6 +67,11 @@ def github_environment(values,service):
         if scope is None and name.endswith('apikey'):continue  # 未声明消费者的 API key 不向所有服务广播。
         if scope is None or service in scope:result[key]=value
     return result
+
+def runtime_environment(values,service):
+    """dev.env 中本服务要从进程环境解析的值：范围与 github_environment 相同；没有声明消费者的 Keycloak 密钥一律不收。"""
+    return {key:value for key,value in github_environment(values,service).items()
+            if key in RUNTIME_NAMES or normalized(key).startswith(RUNTIME_SCOPED_PREFIXES)}
 
 def _pairs(pairs):
     result={}
